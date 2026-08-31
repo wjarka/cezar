@@ -193,3 +193,24 @@ network), reuses an already-healthy instance instead of double-booting, and writ
 - `CODE_REVIEW.md` — what reviewers check and how severities are assigned.
 - `BACKWARD_COMPATIBILITY.md` — the public surfaces you must not break silently.
 - `.ai/agentic.config.json` — machine-readable pipeline config every om-* skill reads (base branch, validation commands, labels).
+
+### Dev flow bindings
+
+Concrete values for this repo, in one place so every contributor — human
+or agent — reads the same ones. Rows are matched by label, so update a
+row's value when the thing it names changes, rather than its label.
+
+| Binding | Value |
+|---|---|
+| Default branch | `main` |
+| Branching model | GitHub flow — feature branches off `main`, pull requests based on `main` |
+| Code host | GitHub |
+| CI provider | GitHub Actions |
+| Issue tracker | GitHub Issues |
+| Stack | TypeScript (Node ≥20), npm workspaces; Hono + Zod server; React 19 + Vite + Tailwind v4 cockpit |
+| Verification | `npm run typecheck`, `npm test`, `npm run test:unit`, `npm run build`, `npm run test:package` |
+| Automated reviewer | unknown |
+| Commit convention | Conventional Commits |
+| Specs and plans | unknown |
+| Board | **Cezar**, user `wjarka`, project #4 |
+| Task orchestrator | Cezar |
