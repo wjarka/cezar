@@ -32,6 +32,8 @@ export interface PiUiMapperState {
   readonly turnUsage: TokenUsage | null;
   readonly turnCostUsd: number | null;
   readonly startedItems: ReadonlySet<string>;
+  readonly endedItems: ReadonlySet<string>;
+  readonly textBlock: number;
   readonly textByItem: ReadonlyMap<string, string>;
   readonly tools: ReadonlyMap<string, UiToolItem>;
 }
@@ -51,6 +53,8 @@ export function createPiUiState(): PiUiMapperState {
     turnUsage: null,
     turnCostUsd: null,
     startedItems: new Set(),
+    endedItems: new Set(),
+    textBlock: 0,
     textByItem: new Map(),
     tools: new Map(),
   };
@@ -61,7 +65,7 @@ export function piTurnStarted(state: PiUiMapperState): PiUiMapping {
   const turnId = `turn_${turnSeq}`;
   return {
     events: [{ type: 'turn.started', turnId }],
-    state: { ...state, turnSeq, turnId, stopReason: 'end_turn' },
+    state: { ...state, turnSeq, turnId, stopReason: 'end_turn', textBlock: 0 },
   };
 }
 
@@ -135,21 +139,23 @@ function mapMessageUpdate(value: Record<string, unknown>, state: PiUiMapperState
     updateType.startsWith('thinking_') ? ('reasoning' as const) : updateType.startsWith('text_') ? ('text' as const) : null;
   if (!field) return { events: [], state };
 
-  const itemId = `${state.turnId}_${field}_${contentIndex}`;
+  const itemId = `${state.turnId}_${field}_${contentIndex}_${state.textBlock}`;
   const events: UiEvent[] = [];
   let startedItems = state.startedItems;
   let textByItem = state.textByItem;
+  let endedItems = state.endedItems;
   const makeItem = (text: string): UiMessageItem | UiReasoningItem =>
     field === 'text'
       ? { kind: 'message', id: itemId, role: 'assistant', text }
       : { kind: 'reasoning', id: itemId, text };
 
+  const delta = string(update.delta);
   if (!startedItems.has(itemId)) {
+    if (delta === undefined && !updateType.endsWith('_end')) return { events: [], state };
     events.push({ type: 'item.started', item: makeItem('') });
     startedItems = new Set(startedItems).add(itemId);
   }
 
-  const delta = string(update.delta);
   if (delta !== undefined) {
     events.push({ type: 'item.delta', itemId, field, delta });
     const next = new Map(textByItem);
@@ -160,11 +166,32 @@ function mapMessageUpdate(value: Record<string, unknown>, state: PiUiMapperState
   if (updateType.endsWith('_end')) {
     const text = string(update.content) ?? textByItem.get(itemId) ?? '';
     events.push({ type: 'item.completed', item: makeItem(text) });
+    endedItems = new Set(endedItems).add(itemId);
   }
-  return { events, state: { ...state, startedItems, textByItem } };
+  return { events, state: { ...state, startedItems, textByItem, endedItems } };
+}
+
+function closeOpenPiText(state: PiUiMapperState): PiUiMapping {
+  const events: UiEvent[] = [];
+  let endedItems = state.endedItems;
+  for (const id of state.startedItems) {
+    if (endedItems.has(id)) continue;
+    const isReasoning = id.includes('_reasoning_');
+    const isText = id.includes('_text_');
+    if (!isReasoning && !isText) continue;
+    const text = state.textByItem.get(id) ?? '';
+    events.push({
+      type: 'item.completed',
+      item: isText ? { kind: 'message', id, role: 'assistant', text } : { kind: 'reasoning', id, text },
+    });
+    endedItems = new Set(endedItems).add(id);
+  }
+  return { events, state: { ...state, endedItems, textBlock: state.textBlock + 1 } };
 }
 
 function mapToolStart(value: Record<string, unknown>, state: PiUiMapperState): PiUiMapping {
+  const closed = closeOpenPiText(state);
+  state = closed.state;
   const id = string(value.toolCallId);
   const name = string(value.toolName);
   if (!id || !name) return { events: [], state };
@@ -182,7 +209,7 @@ function mapToolStart(value: Record<string, unknown>, state: PiUiMapperState): P
   if (diffs) item.diffs = diffs;
   const tools = new Map(state.tools);
   tools.set(id, item);
-  const events: UiEvent[] = [{ type: 'item.started', item }];
+  const events: UiEvent[] = [...closed.events, { type: 'item.started', item }];
   const plan = toolPlan(name, value.args);
   if (plan) events.push({ type: 'plan.updated', entries: plan });
   return { events, state: { ...state, tools } };
@@ -219,16 +246,19 @@ function mapToolEnd(value: Record<string, unknown>, state: PiUiMapperState): PiU
 
 function completeTurn(reason: StopReason, state: PiUiMapperState): PiUiMapping {
   if (!state.turnId) return { events: [], state };
+  const turnId = state.turnId;
+  const closed = closeOpenPiText(state);
+  state = closed.state;
   const event: Extract<UiEvent, { type: 'turn.completed' }> = {
     type: 'turn.completed',
-    turnId: state.turnId,
+    turnId,
     stopReason: reason,
   };
   if (state.turnUsage) event.usage = state.turnUsage;
   if (state.turnCostUsd !== null) event.costUsd = state.turnCostUsd;
   // Cleared with the turn id: the next turn's counts are its own, and a turn pi ends without
   // reporting usage must not inherit the previous turn's numbers.
-  return { events: [event], state: { ...state, turnId: null, turnUsage: null, turnCostUsd: null } };
+  return { events: [...closed.events, event], state: { ...state, turnId: null, turnUsage: null, turnCostUsd: null } };
 }
 
 function mapMessageEnd(value: Record<string, unknown>, state: PiUiMapperState): PiUiMapping {
