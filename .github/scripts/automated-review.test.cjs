@@ -290,9 +290,63 @@ test('does not post after three completed automated reviews', async () => {
   };
   await postReview({
     github, owner: 'o', repo: 'r', pullNumber: 7, eventHeadSha: sha, reviewedHeadSha: sha,
-    comments: [{ path: 'a', line: 2, body: 'Fix it' }], body: null, maxRounds: 99,
+    comments: [{ path: 'a', line: 2, body: 'Fix it' }], body: null,
   });
   assert.equal(posted, false);
+});
+
+test('posts a later round when maxRounds is raised above the review count', async () => {
+  let posted = false;
+  const github = {
+    paginate: async () => [
+      { user: { login: 'github-actions[bot]' }, submitted_at: '2026-08-18T10:00:00Z' },
+      { user: { login: 'github-actions[bot]' }, submitted_at: '2026-08-18T10:01:00Z' },
+      { user: { login: 'github-actions[bot]' }, submitted_at: '2026-08-18T10:02:00Z' },
+    ],
+    rest: { pulls: {
+      get: async () => ({ data: { head: { sha } } }),
+      createReview: async () => { posted = true; },
+    } },
+  };
+  await postReview({
+    github, owner: 'o', repo: 'r', pullNumber: 7, eventHeadSha: sha, reviewedHeadSha: sha,
+    comments: [{ path: 'a', line: 2, body: 'Fix it' }], body: null, maxRounds: 5,
+  });
+  assert.equal(posted, true);
+});
+
+test('refuses a non-numeric maxRounds instead of reviewing unbounded', async () => {
+  const github = {
+    paginate: async () => [],
+    rest: { pulls: {
+      get: async () => ({ data: { head: { sha } } }),
+      createReview: async () => assert.fail('must not post'),
+    } },
+  };
+  await assert.rejects(postReview({
+    github, owner: 'o', repo: 'r', pullNumber: 7, eventHeadSha: sha, reviewedHeadSha: sha,
+    comments: [{ path: 'a', line: 2, body: 'Fix it' }], body: null, maxRounds: Number('abc'),
+  }), /positive integer/);
+});
+
+test('posts after the cap when ignoreCap is set', async () => {
+  let posted = false;
+  const github = {
+    paginate: async () => [
+      { user: { login: 'github-actions[bot]' }, submitted_at: '2026-08-18T10:00:00Z' },
+      { user: { login: 'github-actions[bot]' }, submitted_at: '2026-08-18T10:01:00Z' },
+      { user: { login: 'github-actions[bot]' }, submitted_at: '2026-08-18T10:02:00Z' },
+    ],
+    rest: { pulls: {
+      get: async () => ({ data: { head: { sha } } }),
+      createReview: async () => { posted = true; },
+    } },
+  };
+  await postReview({
+    github, owner: 'o', repo: 'r', pullNumber: 7, eventHeadSha: sha, reviewedHeadSha: sha,
+    comments: [{ path: 'a', line: 2, body: 'Fix it' }], body: null, ignoreCap: true,
+  });
+  assert.equal(posted, true);
 });
 
 test('ignores malformed review entries during duplicate suppression', async () => {

@@ -210,6 +210,7 @@ row's value when the thing it names changes, rather than its label.
 | Stack | TypeScript (Node ≥20), npm workspaces; Hono + Zod server; React 19 + Vite + Tailwind v4 cockpit |
 | Verification | `npm run typecheck`, `npm test`, `npm run test:unit`, `npm run build`, `npm run test:package` |
 | Automated reviewer | `AUTOMATED_REVIEWER=codex` |
+| Automated review rounds | `AUTOMATED_REVIEW_ROUNDS` (default 3) |
 | Commit convention | Conventional Commits |
 | Specs and plans | unknown |
 | Board | **Cezar**, user `wjarka`, project #4 |
