@@ -102,6 +102,10 @@ export interface OpencodeUiMapperState {
    *  Pending scopes bind to child sessions first-in-first-out: the oldest
    *  pending subtask takes the next child session heard from (#5). */
   readonly unboundSubtasks: readonly SubtaskScope[];
+  /** Child sessions whose scope is over (the child went idle, or its task tool
+   *  settled). A late event from one must never claim a pending sibling
+   *  through the FIFO queue. Cleared with the queue at the main turn's end. */
+  readonly closedSessions: ReadonlySet<string>;
   readonly usageByMessage: ReadonlyMap<string, MessageUsage>;
   /** Last emitted session totals — usage.updated fires only on change. */
   readonly lastUsage: { total: number; cost: number | null } | null;
@@ -128,6 +132,7 @@ export function createOpencodeUiState(): OpencodeUiMapperState {
     lastPlanJson: null,
     subtasks: new Map(),
     unboundSubtasks: [],
+    closedSessions: new Set(),
     usageByMessage: new Map(),
     lastUsage: null,
   };
@@ -593,8 +598,12 @@ function releaseScope(id: string, state: OpencodeUiMapperState): OpencodeUiMappe
   const bound = [...state.subtasks].filter(([, scope]) => scope.id === id);
   if (pending.length === state.unboundSubtasks.length && bound.length === 0) return state;
   const subtasks = new Map(state.subtasks);
-  for (const [sessionId] of bound) subtasks.delete(sessionId);
-  return { ...state, subtasks, unboundSubtasks: pending };
+  const closedSessions = new Set(state.closedSessions);
+  for (const [sessionId] of bound) {
+    subtasks.delete(sessionId);
+    closedSessions.add(sessionId);
+  }
+  return { ...state, subtasks, unboundSubtasks: pending, closedSessions };
 }
 
 function isSubtaskTool(name: string): boolean {
@@ -618,7 +627,7 @@ function mapIdle(props: Record<string, unknown>, state: OpencodeUiMapperState): 
     subtasks.delete(sid);
     return {
       events: [{ type: 'item.completed', item: completedSubtask(resolved.subtask) }],
-      state: { ...resolved.state, subtasks },
+      state: { ...resolved.state, subtasks, closedSessions: new Set(resolved.state.closedSessions).add(sid) },
     };
   }
   // Idle with no turn in flight (or a repeated idle) closes nothing.
@@ -644,6 +653,7 @@ function mapIdle(props: Record<string, unknown>, state: OpencodeUiMapperState): 
       turnErrored: false,
       subtasks: new Map(),
       unboundSubtasks: [],
+      closedSessions: new Set(),
     },
   };
 }
@@ -669,6 +679,8 @@ function resolveSubtask(
 ): { state: OpencodeUiMapperState; subtask?: SubtaskScope } {
   const existing = state.subtasks.get(sessionId);
   if (existing !== undefined) return { state, subtask: existing };
+  // A closed child's late events have no home — never a sibling's scope.
+  if (state.closedSessions.has(sessionId)) return { state };
   // First-in-first-out: the oldest pending subtask claims this child session
   // and the rest stay queued for the children still to come (#5).
   const [subtask, ...rest] = state.unboundSubtasks;

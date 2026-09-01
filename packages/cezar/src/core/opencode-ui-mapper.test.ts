@@ -671,6 +671,79 @@ describe('mapOpencodeEvent edge cases', () => {
     expect(mainIdle.events).toEqual([{ type: 'turn.completed', turnId: 'turn_1', stopReason: 'end_turn' }]);
   });
 
+  it('a child whose task settled cannot claim a pending sibling with a late idle', () => {
+    let state = startedState();
+    for (const [id, description] of [
+      ['prt_task_a', 'Task A'],
+      ['prt_task_b', 'Task B'],
+    ] as const) {
+      state = mapOpencodeEvent(
+        part({ id, type: 'tool', tool: 'task', state: { status: 'running', input: { description } } }),
+        state,
+      ).state;
+    }
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    // Child A speaks and binds task A; task A then settles before child A goes idle.
+    state = mapOpencodeEvent(
+      part({ id: 'prt_a', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'A' }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task_a', type: 'tool', tool: 'task', state: { status: 'completed', input: { description: 'Task A' }, output: 'a' } }),
+      state,
+    ).state;
+    // Child A's late idle belongs to a released scope: it must not complete task B.
+    const lateIdle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, state);
+    expect(lateIdle.events).toEqual([]);
+    // Task B is still pending for child B, which is only heard from now.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      lateIdle.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_b' } }, b.state).events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_task_b', status: 'completed' }) },
+    ]);
+  });
+
+  it('a child that already went idle cannot claim a pending sibling with a late event', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(part({ id: 'prt_st_a', type: 'subtask', prompt: 'A', description: 'Task A' }), state).state;
+    state = mapOpencodeEvent(part({ id: 'prt_st_b', type: 'subtask', prompt: 'B', description: 'Task B' }), state).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    state = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, state).state;
+    // A trailing message.updated (final usage) from child A after its idle.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant', cost: 0.01 } } },
+      state,
+    ).state;
+    const late = mapOpencodeEvent(
+      part({ id: 'prt_a_late', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'late' }),
+      state,
+    );
+    expect(late.events).toEqual([]);
+    // Task B still binds to child B.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      late.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);
