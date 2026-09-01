@@ -188,9 +188,20 @@ export class PiRunner implements AgentRunner {
             onEvent?.({ type: 'note', message: `pi: skipped unparseable RPC line: ${truncate(line)}` });
             continue;
           }
-          // Flush buffered v1 text before any non-streaming record so v2 UI
-          // events (tool starts, turn-end, …) never overtake a pending block.
-          if (!isRecord(value) || value.type !== 'message_update') flushText();
+          // Flush before real message/tool/turn boundaries so v2 UI events
+          // never overtake a pending block. Do NOT flush on prompt/response
+          // acks — mid-turn `steer` can land between text_deltas and would
+          // split one block into partial + full (and clear the live key).
+          if (
+            isRecord(value) &&
+            (value.type === 'tool_execution_start' ||
+              value.type === 'message_end' ||
+              value.type === 'agent_settled' ||
+              value.type === 'turn_end' ||
+              value.type === 'agent_end')
+          ) {
+            flushText();
+          }
           emitUi(value);
           if (!isRecord(value)) continue;
 

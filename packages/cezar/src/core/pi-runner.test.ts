@@ -247,6 +247,54 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const textEvents = events.filter((e): e is Extract<AgentEvent, { type: 'text' }> => e.type === 'text');
     expect(textEvents.map((e) => e.text)).toEqual(['partial only', 'after interrupt']);
   });
+
+  it('keeps one text block when a mid-stream prompt ack arrives between text_delta events', async () => {
+    // sendMessage uses streamingBehavior: 'steer' while a turn is open. A
+    // prompt `response` ack must not flush/clear the in-flight block, or the
+    // partial + full snapshot emit twice and appendTurnText inserts a newline.
+    const full = 'hello world';
+    const mockPath = join(cwd, 'mock-pi-steer-ack-mid-text.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'steer-ack' } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'hello ', partial: {} } });
+    // Mid-stream steer/prompt acknowledgement — must not split the block.
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'world', partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: ${JSON.stringify(full)}, partial: {} } });
+    send({ type: 'message_end', message: { role: 'assistant', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+    send({ type: 'turn_end', message: {}, toolResults: [] });
+    send({ type: 'agent_end', messages: [], willRetry: false });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new PiRunner({ bin: mockPath });
+    const events: AgentEvent[] = [];
+    await runner.run({ userPrompt: 'steer me', cwd, timeoutMs: 10_000 }, (event) => events.push(event));
+
+    const textEvents = events.filter((e): e is Extract<AgentEvent, { type: 'text' }> => e.type === 'text');
+    expect(textEvents.map((e) => e.text)).toEqual([full]);
+    let turnText = '';
+    for (const event of textEvents) turnText = appendTurnText(turnText, event.text);
+    expect(turnText).toBe(full);
+  });
 });
 
 describe('pi RPC argv', () => {
