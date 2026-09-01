@@ -72,6 +72,9 @@ interface SubtaskScope {
    *  task tool publishes `metadata.sessionId` on its running snapshot right
    *  after creating the child. Known → bound directly, never through FIFO. */
   readonly childSession?: string;
+  /** The scope this one was opened inside (a task issued from a child
+   *  session) — completion keeps the same nesting. */
+  readonly parentItemId?: string;
 }
 
 export interface OpencodeUiMapperState {
@@ -285,7 +288,7 @@ function mapPart(props: Record<string, unknown>, state: OpencodeUiMapperState): 
     case 'patch':
       return mapPatch(part, id, parentItemId, state);
     case 'subtask':
-      return mapSubtask(part, id, state);
+      return mapSubtask(part, id, parentItemId, state);
     case 'step-finish':
       return mapStepFinish(part, messageID, state);
     default:
@@ -423,12 +426,13 @@ function mapTool(
     next = { ...next, tools };
   }
 
-  // A top-level task tool call spawns a child session exactly like a
-  // `subtask` part does (#5). When the snapshot names that child
-  // (`metadata.sessionId`, published as soon as the child exists) the scope
-  // binds to it outright; otherwise it queues for the next child session
-  // heard from. A nested one belongs to a scope already.
-  if (parentItemId === undefined && isSubtaskTool(name)) {
+  // A task tool call spawns a child session exactly like a `subtask` part
+  // does (#5). When the snapshot names that child (`metadata.sessionId`,
+  // published as soon as the child exists) the scope binds to it outright;
+  // otherwise it queues for the next child session heard from. A task issued
+  // from inside a child session opens a scope of its own, nested under the
+  // outer one, so its grandchild's output has a home too.
+  if (isSubtaskTool(name)) {
     const childSession = metadata ? (str(metadata.sessionId) ?? str(metadata.sessionID)) : undefined;
     const scope: SubtaskScope = {
       id,
@@ -436,6 +440,7 @@ function mapTool(
       title,
       ...(item.input !== undefined ? { input: item.input } : {}),
       ...(childSession !== undefined ? { childSession } : {}),
+      ...(parentItemId !== undefined ? { parentItemId } : {}),
     };
     if (!settled) {
       // OpenCode publishes the part before its arguments finish parsing, so
@@ -569,6 +574,7 @@ function patchArtifacts(files: unknown): { diffs: FileDiff[]; locations: ToolLoc
 function mapSubtask(
   part: Record<string, unknown>,
   id: string,
+  parentItemId: string | undefined,
   state: OpencodeUiMapperState,
 ): OpencodeUiMapping {
   if (state.startedItems.has(id)) return { events: [], state };
@@ -587,12 +593,20 @@ function mapSubtask(
   if (description !== undefined) input.description = description;
   if (str(part.agent) !== undefined) input.agent = part.agent;
   if (Object.keys(input).length > 0) item.input = input;
+  if (parentItemId !== undefined) item.parentItemId = parentItemId;
+  const scope: SubtaskScope = {
+    id,
+    name: item.name,
+    title: item.title,
+    ...(item.input !== undefined ? { input: item.input } : {}),
+    ...(parentItemId !== undefined ? { parentItemId } : {}),
+  };
   return {
     events: [{ type: 'item.started', item }],
     state: {
       ...state,
       startedItems: new Set(state.startedItems).add(id),
-      unboundSubtasks: [...state.unboundSubtasks, { id, name: item.name, title: item.title, input: item.input }],
+      unboundSubtasks: [...state.unboundSubtasks, scope],
     },
   };
 }
@@ -648,6 +662,7 @@ function sameScope(a: SubtaskScope, b: SubtaskScope): boolean {
     a.name === b.name &&
     a.title === b.title &&
     a.childSession === b.childSession &&
+    a.parentItemId === b.parentItemId &&
     JSON.stringify(a.input) === JSON.stringify(b.input)
   );
 }
@@ -782,6 +797,7 @@ function completedSubtask(subtask: SubtaskScope): UiToolItem {
     status: 'completed',
   };
   if (subtask.input !== undefined) item.input = subtask.input;
+  if (subtask.parentItemId !== undefined) item.parentItemId = subtask.parentItemId;
   return item;
 }
 

@@ -916,6 +916,58 @@ describe('mapOpencodeEvent edge cases', () => {
     expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
   });
 
+  it('a task tool issued from a child session scopes its own grandchild under itself', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task A' }, metadata: { sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    // Child A dispatches a task of its own; OpenCode names the grandchild session on it.
+    const nestedTask = mapOpencodeEvent(
+      part({
+        id: 'prt_task_aa',
+        messageID: 'msg_child_a',
+        sessionID: 'ses_child_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task AA' }, metadata: { sessionId: 'ses_grandchild' } },
+      }),
+      state,
+    );
+    expect(nestedTask.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_task_aa', parentItemId: 'prt_task_a' } });
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_gc', sessionID: 'ses_grandchild', role: 'assistant' } } },
+      nestedTask.state,
+    ).state;
+    // The grandchild's output nests under the nested task, not under task A and not dropped.
+    const gc = mapOpencodeEvent(
+      part({ id: 'prt_gc', messageID: 'msg_gc', sessionID: 'ses_grandchild', type: 'text', text: 'deep' }),
+      state,
+    );
+    expect(gc.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_gc', parentItemId: 'prt_task_aa' } });
+    // The grandchild's idle completes the nested task, still nested under task A.
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_grandchild' } }, gc.state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: expect.objectContaining({ id: 'prt_task_aa', name: 'task', status: 'completed', parentItemId: 'prt_task_a' }),
+      },
+    ]);
+    // Task A itself is untouched by the grandchild's idle.
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, idle.state).events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_task_a', status: 'completed' }) },
+    ]);
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);
