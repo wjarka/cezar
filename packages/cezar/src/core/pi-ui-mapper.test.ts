@@ -137,4 +137,20 @@ describe('pi text blocks as distinct v2 items', () => {
     expect(completed).toHaveLength(1);
     expect(completed[0]!.text).toBe('partial');
   });
+
+  it('gives a second assistant message its own item after message_end when both use contentIndex 0', () => {
+    const events = feed([
+      textUpdate('text_delta', { delta: 'first' }),
+      textUpdate('text_end', { content: 'first' }),
+      {
+        type: 'message_end',
+        message: { role: 'assistant', usage: { input: 1, output: 1, totalTokens: 2 } },
+      },
+      textUpdate('text_delta', { delta: 'second' }),
+      textUpdate('text_end', { content: 'second' }),
+    ]);
+    const completed = completedMessages(events);
+    expect(completed.map((item) => item.text)).toEqual(['first', 'second']);
+    expect(completed[0]!.id).not.toBe(completed[1]!.id);
+  });
 });

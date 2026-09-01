@@ -262,11 +262,13 @@ function completeTurn(reason: StopReason, state: PiUiMapperState): PiUiMapping {
 }
 
 function mapMessageEnd(value: Record<string, unknown>, state: PiUiMapperState): PiUiMapping {
+  const closed = closeOpenPiText(state);
+  state = closed.state;
   const message = isRecord(value.message) ? value.message : undefined;
   const usage = message && message.role === 'assistant' ? usageEvent(message.usage) : undefined;
-  if (!usage) return { events: [], state };
+  if (!usage) return { events: closed.events, state };
   return {
-    events: [usage],
+    events: [...closed.events, usage],
     state: { ...state, turnUsage: usage.usage, turnCostUsd: usage.costUsd ?? null },
   };
 }
