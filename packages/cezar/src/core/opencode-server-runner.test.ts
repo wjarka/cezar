@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from './agent-runner.ts';
-import { KILL_GRACE_MS, OpencodeServerRunner, createNoTimeoutDispatcher } from './opencode-server-runner.ts';
+import { KILL_GRACE_MS, OpencodeServerRunner } from './opencode-server-runner.ts';
 
 const spawnHook = vi.hoisted(() => ({ override: null as null | (() => unknown) }));
 
@@ -157,12 +157,16 @@ describe('SIGTERM→SIGKILL escalation for an opencode server that survives SIGT
 describe('turn lifecycle over prompt_async + session.idle', () => {
   /** In-process stand-in for `opencode serve`: just the endpoints the runner
    *  touches, with the test driving the SSE bus frame by frame. */
-  async function startMockServer(opts: { promptStatus?: number } = {}) {
+  async function startMockServer(opts: { promptStatus?: number; refuseSse?: boolean } = {}) {
     const clients: ServerResponse[] = [];
     const promptPosts: string[] = [];
     const server = createServer((req, res) => {
       const url = req.url ?? '';
       if (req.method === 'GET' && url.startsWith('/event')) {
+        if (opts.refuseSse) {
+          res.destroy();
+          return;
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         // Flush the headers now — the runner awaits the SSE connection before
         // its first prompt, and Node holds headers back until the first write.
@@ -194,6 +198,10 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
       promptPosts,
       send(event: unknown): void {
         for (const c of clients) c.write(`data: ${JSON.stringify(event)}\n\n`);
+      },
+      dropSse(): void {
+        for (const c of clients) c.destroy();
+        clients.length = 0;
       },
       async close(): Promise<void> {
         // Keep-alive sockets from the runner's fetch pool would otherwise
@@ -245,7 +253,7 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
   }
 
   async function withSession(
-    opts: { promptStatus?: number },
+    opts: { promptStatus?: number; refuseSse?: boolean },
     run: (h: Harness) => Promise<void>,
   ): Promise<void> {
     const mock = await startMockServer(opts);
@@ -356,37 +364,31 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
       expect(texts.join('\n')).not.toContain('foreign');
     });
   });
-});
 
-/**
- * #4 — the no-timeout dispatcher keeps undici's default 300s headers/body
- * timeouts from cutting the SSE stream (or any long request) mid-turn. undici
- * is loaded through `process.getBuiltinModule`, so a runtime without it must
- * still start the runner — just without the dispatcher.
- */
-describe('createNoTimeoutDispatcher', () => {
-  it('returns undefined when process.getBuiltinModule is unavailable', () => {
-    expect(createNoTimeoutDispatcher(undefined)).toBeUndefined();
+  it('ends the turn and the session when the event stream drops mid-turn', async () => {
+    await withSession({}, async ({ events, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+
+      // The bus is the only source of `session.idle` now — losing it must not
+      // park the turn forever.
+      mock.dropSse();
+      await waitFor(() => count(events, 'turn-end') === 1);
+      const notes = events.filter(
+        (e) => e.type === 'note' && e.message.includes('event stream'),
+      );
+      expect(notes).toHaveLength(1);
+      await session.result;
+      expect(session.open).toBe(false);
+    });
   });
 
-  it('returns undefined when loading undici throws', () => {
-    expect(
-      createNoTimeoutDispatcher(() => {
-        throw new Error('no such module');
-      }),
-    ).toBeUndefined();
-  });
-
-  it('returns undefined when the module exposes no Agent', () => {
-    expect(createNoTimeoutDispatcher(() => ({}))).toBeUndefined();
-  });
-
-  it('builds an Agent with headers and body timeouts disabled', () => {
-    class FakeAgent {
-      constructor(readonly opts: Record<string, unknown>) {}
-    }
-    const dispatcher = createNoTimeoutDispatcher((id) => (id === 'undici' ? { Agent: FakeAgent } : undefined));
-    expect(dispatcher).toBeInstanceOf(FakeAgent);
-    expect((dispatcher as FakeAgent).opts).toEqual({ headersTimeout: 0, bodyTimeout: 0 });
+  it('fails the session loudly when the event stream cannot connect', async () => {
+    await withSession({ refuseSse: true }, async ({ events, session }) => {
+      await waitFor(() => count(events, 'error') >= 1);
+      await session.result;
+      // The prompt never posts into a session that cannot hear its events.
+      expect(count(events, 'turn-end')).toBe(0);
+    });
   });
 });
+

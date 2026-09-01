@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
 import type {
   AgentEvent,
   AgentRunResult,
@@ -30,39 +31,6 @@ export interface OpencodeRunnerOptions {
 }
 
 const SERVER_START_TIMEOUT_MS = 30_000;
-
-/**
- * Node's fetch dispatches through an undici Agent whose default headers/body
- * timeouts are 300s — long enough to look infinite and short enough to cut a
- * real turn's SSE stream (or any long request) as `fetch failed` (#4,
- * upstream #897). Build a no-timeout Agent from the undici BUILT-IN — never
- * an npm dependency — and run without one where the runtime can't provide it.
- */
-export function createNoTimeoutDispatcher(
-  getBuiltinModule: ((id: string) => unknown) | undefined,
-): unknown {
-  try {
-    const undici = getBuiltinModule?.('undici') as
-      | { Agent?: new (opts: { headersTimeout: number; bodyTimeout: number }) => unknown }
-      | undefined;
-    if (undici?.Agent) return new undici.Agent({ headersTimeout: 0, bodyTimeout: 0 });
-  } catch {
-    // No undici built-in — the runner still starts, on the default dispatcher.
-  }
-  return undefined;
-}
-
-let noTimeoutDispatcher: unknown;
-let dispatcherResolved = false;
-/** Lazy so a runtime without the built-in pays nothing until the first request. */
-function longPollDispatcher(): unknown {
-  if (!dispatcherResolved) {
-    dispatcherResolved = true;
-    const proc = process as { getBuiltinModule?: (id: string) => unknown };
-    noTimeoutDispatcher = createNoTimeoutDispatcher(proc.getBuiltinModule?.bind(proc));
-  }
-  return noTimeoutDispatcher;
-}
 
 /** Grace between the teardown SIGTERM and the SIGKILL that follows it. */
 export const KILL_GRACE_MS = 4_000;
@@ -422,36 +390,47 @@ class OpencodeSession implements AgentSession {
 
   /** Resolves once the SSE stream is CONNECTED (headers in) — the frames are
    *  then drained in the background. Callers await the connection so no
-   *  event emitted after this resolves can be missed. */
+   *  event emitted after this resolves can be missed.
+   *
+   *  Speaks node:http, not fetch: undici's default Agent cuts a response
+   *  body idle for 300s, which would sever a quiet turn's bus mid-run (#4) —
+   *  node's own client has no idle timeout. (`process.getBuiltinModule`
+   *  cannot fix that: undici is bundled into node but not exposed as a
+   *  built-in, so there is no no-timeout dispatcher to hand fetch without
+   *  taking undici as a real dependency.)
+   *
+   *  A connection that cannot be established throws, failing `bootstrap`:
+   *  with `prompt_async` this stream is the only source of turn-ends, so a
+   *  session that cannot hear it is dead on arrival, not degraded. */
   private async consumeEvents(): Promise<void> {
     if (!this.baseUrl) return;
-    let res: Response;
-    const init: RequestInit = {
-      headers: { accept: 'text/event-stream' },
-      signal: this.sse.signal,
-    };
-    // A quiet stream (one long-running tool, no output) must outlive undici's
-    // default 300s body timeout. `dispatcher` is undici's RequestInit
-    // extension — real on Node's fetch, unknown to the DOM lib types.
-    const dispatcher = longPollDispatcher();
-    if (dispatcher) (init as { dispatcher?: unknown }).dispatcher = dispatcher;
+    let res: IncomingMessage;
     try {
-      res = await fetch(`${this.baseUrl}/event`, init);
-    } catch {
-      return; // aborted or server gone — the turn response still carries results
+      res = await new Promise<IncomingMessage>((resolve, reject) => {
+        const req = httpRequest(
+          `${this.baseUrl}/event`,
+          { headers: { accept: 'text/event-stream' }, signal: this.sse.signal },
+          resolve,
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    } catch (err) {
+      if (this.sse.signal.aborted) return; // torn down during bootstrap — not a failure
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`event stream failed to connect: ${message}`);
     }
-    if (!res.body) return;
-    void this.readEvents(res.body.getReader());
+    void this.readEvents(res);
   }
 
-  private async readEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
-    const decoder = new TextDecoder();
+  private async readEvents(res: IncomingMessage): Promise<void> {
+    // StringDecoder under the hood — multi-byte characters split across
+    // chunks arrive whole, like the TextDecoder streaming mode did.
+    res.setEncoding('utf8');
     let buffer = '';
     try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      for await (const chunk of res) {
+        buffer += chunk as string;
         let sep: number;
         while ((sep = buffer.indexOf('\n\n')) >= 0) {
           const frame = buffer.slice(0, sep);
@@ -461,6 +440,19 @@ class OpencodeSession implements AgentSession {
       }
     } catch {
       // aborted — normal on end()/interrupt
+    } finally {
+      // `session.idle` rides this stream and nothing else — a feed that dies
+      // while the server is still up would otherwise park the current turn
+      // forever and leave every later prompt unanswerable. Close the turn,
+      // say so, and end the session; "Continue" resumes it on a fresh server.
+      if (this.serverOpen && !this.sse.signal.aborted) {
+        this.emit({
+          type: 'note',
+          message: 'opencode: event stream closed unexpectedly — ending session',
+        });
+        this.finishTurn();
+        this.end();
+      }
     }
   }
 
@@ -576,14 +568,13 @@ class OpencodeSession implements AgentSession {
     body: unknown,
   ): Promise<Record<string, unknown>> {
     if (!this.baseUrl) throw new Error('opencode server not ready');
-    const init: RequestInit = {
+    // Plain fetch is fine here: every call is a short round-trip now that
+    // prompts go through `prompt_async` — nothing long-polls anymore.
+    const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: body !== undefined ? { 'content-type': 'application/json' } : {},
       body: body !== undefined ? JSON.stringify(body) : undefined,
-    };
-    const dispatcher = longPollDispatcher();
-    if (dispatcher) (init as { dispatcher?: unknown }).dispatcher = dispatcher;
-    const res = await fetch(`${this.baseUrl}${path}`, init);
+    });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       throw new Error(`${method} ${path} → ${res.status} ${detail.slice(0, 200)}`);
