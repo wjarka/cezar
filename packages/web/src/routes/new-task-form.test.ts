@@ -107,10 +107,9 @@ describe('model option resolution', () => {
   })
 
   it('never reads a provider-spanning runner’s preset as another runner’s exclusive model', () => {
-    // pi lists `openai/gpt-5.1` and `anthropic/claude-sonnet-5` as presets, and OpenCode serves
-    // the very same models from the very same providers. Counting pi's list as evidence of
-    // "belongs to another runner" would silently strip those ids from OpenCode's picker — the
-    // #794 bug, reintroduced through the back door.
+    // pi and OpenCode both pick with `provider/model` and span every configured provider.
+    // Counting either's list as evidence of "belongs to another runner" would silently strip
+    // those ids from the other picker's catalog — the #794 bug, reintroduced through the back door.
     for (const model of ['openai/gpt-5.1', 'anthropic/claude-sonnet-5']) {
       expect(modelConflictsWithRunner(model, 'opencode')).toBe(false)
       expect(modelConflictsWithRunner(model, 'pi')).toBe(false)
@@ -119,11 +118,27 @@ describe('model option resolution', () => {
     expect(modelConflictsWithRunner('opus', 'codex')).toBe(true)
   })
 
+  it('pi: auto alone until the host catalog answers', () => {
+    expect(modelsForRunner('pi').map((m) => m.id)).toEqual([''])
+    expect(
+      modelsForRunner('pi', {
+        runner: 'pi',
+        models: [{ id: 'xai/grok-4.6', label: 'grok-4.6', description: 'via xai' }],
+        source: 'live',
+        stale: false,
+      }).map((m) => m.id),
+    ).toEqual(['', 'xai/grok-4.6'])
+  })
+
   it('names the runner whose catalog is stale or unavailable', () => {
     expect(
       modelCatalogStatus('opencode', { runner: 'opencode', models: [], source: 'cache', stale: true, reason: 'raw' }),
     ).toBe('Using cached OpenCode model list')
     expect(modelCatalogStatus('opencode', undefined, true)).toBe('Latest OpenCode models unavailable')
+    expect(
+      modelCatalogStatus('pi', { runner: 'pi', models: [], source: 'cache', stale: true, reason: 'raw' }),
+    ).toBe('Using cached Pi model list')
+    expect(modelCatalogStatus('pi', undefined, true)).toBe('Latest Pi models unavailable')
   })
 
   it('resolveModel keeps known picks and arbitrary native model pins', () => {

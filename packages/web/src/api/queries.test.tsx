@@ -138,6 +138,14 @@ describe('useRunnerModels', () => {
     expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/v1/models?runner=opencode')
   })
 
+  it('loads the Pi catalog from its own cache entry', async () => {
+    fetchMock.mockResolvedValue(json({ runner: 'pi', models: [{ id: 'xai/grok-4.6', label: 'grok-4.6', description: 'via xai' }], source: 'live', stale: false }))
+    const { result } = renderHook(() => useRunnerModels('pi'), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.models[0]?.id).toBe('xai/grok-4.6')
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/v1/models?runner=pi')
+  })
+
   it('never asks the server about claude, which has no host catalog', async () => {
     const { result } = renderHook(() => useRunnerModels('claude'), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.fetchStatus).toBe('idle'))

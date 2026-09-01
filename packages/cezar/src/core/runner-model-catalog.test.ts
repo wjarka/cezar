@@ -82,6 +82,19 @@ describe('RunnerModelCatalog', () => {
     expect(discover).toHaveBeenCalledOnce();
   });
 
+  it('names Pi when its discovery is unavailable', async () => {
+    const catalog = new RunnerModelCatalog({
+      adapters: { pi: { discover: async () => { throw new Error('secret'); } } },
+    });
+    await expect(catalog.get('pi')).resolves.toEqual({
+      runner: 'pi',
+      models: [],
+      source: 'unavailable',
+      stale: false,
+      reason: 'Pi model discovery is temporarily unavailable',
+    });
+  });
+
   it('does not let one runner cache or in-flight request affect another', async () => {
     const codex = vi.fn(async () => models);
     const claude = vi.fn(async () => [{ id: 'opus', label: 'Opus', description: '' }]);
