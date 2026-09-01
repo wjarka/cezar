@@ -125,4 +125,16 @@ describe('pi text blocks as distinct v2 items', () => {
     ]);
     expect(completedMessages(events)).toHaveLength(1);
   });
+
+  it('ignores a malformed tool_execution_start without closing open text', () => {
+    const events = feed([
+      textUpdate('text_delta', { delta: 'partial' }),
+      { type: 'tool_execution_start' },
+      { type: 'agent_settled' },
+    ]);
+    expect(events.some((e) => e.type === 'item.started' && e.item.kind === 'tool')).toBe(false);
+    const completed = completedMessages(events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]!.text).toBe('partial');
+  });
 });

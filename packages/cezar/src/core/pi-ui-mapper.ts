@@ -190,11 +190,11 @@ function closeOpenPiText(state: PiUiMapperState): PiUiMapping {
 }
 
 function mapToolStart(value: Record<string, unknown>, state: PiUiMapperState): PiUiMapping {
-  const closed = closeOpenPiText(state);
-  state = closed.state;
   const id = string(value.toolCallId);
   const name = string(value.toolName);
   if (!id || !name) return { events: [], state };
+  const closed = closeOpenPiText(state);
+  state = closed.state;
   const display = toolDisplay(name, value.args);
   const item: UiToolItem = {
     kind: 'tool',
