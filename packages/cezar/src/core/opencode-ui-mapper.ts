@@ -25,9 +25,11 @@
  *  - tool parts have the ONLY real `pending` phase of the three backends
  *    (`pending→pending`, `running→running`, `completed→completed`,
  *    `error→failed`);
- *  - the SSE bus is server-wide: parts from a foreign session id are the
- *    active subtask's child session and nest via `parentItemId` (§7.1);
- *    anything foreign outside a subtask scope is dropped.
+ *  - the SSE bus is server-wide: parts from a foreign session id are a
+ *    subtask's child session and nest via `parentItemId` (§7.1). A `subtask`
+ *    part or a top-level `task` tool call queues a pending scope, and child
+ *    sessions claim pending scopes first-in-first-out as they are heard from
+ *    (#5); anything foreign outside a subtask scope is dropped.
  */
 
 import type {
@@ -58,6 +60,9 @@ interface MessageUsage {
 
 interface SubtaskScope {
   readonly id: string;
+  /** The wire tool name the item was started under (`subtask` for subtask
+   *  parts, `task` for the task tool) — completion keeps the same name. */
+  readonly name: string;
   readonly title: string;
   readonly input?: unknown;
 }
@@ -93,8 +98,9 @@ export interface OpencodeUiMapperState {
   /** Child session id → subtask scope. Foreign parts are attributed only to
    *  their own child session; that session's idle completes the scope. */
   readonly subtasks: ReadonlyMap<string, SubtaskScope>;
-  /** Subtask parts do not carry the child session id. Bind one on the first
-   *  foreign event only while attribution is unambiguous. */
+  /** Subtask parts and task tool calls do not carry the child session id.
+   *  Pending scopes bind to child sessions first-in-first-out: the oldest
+   *  pending subtask takes the next child session heard from (#5). */
   readonly unboundSubtasks: readonly SubtaskScope[];
   readonly usageByMessage: ReadonlyMap<string, MessageUsage>;
   /** Last emitted session totals — usage.updated fires only on change. */
@@ -237,8 +243,8 @@ function mapPart(props: Record<string, unknown>, state: OpencodeUiMapperState): 
   if (type === undefined || id === undefined) return { events: [], state };
 
   // Foreign-session parts nest only under the subtask bound to that child
-  // session. A newly seen child can claim the sole unbound subtask; with two
-  // candidates attribution is ambiguous, so the event is dropped.
+  // session. A newly seen child claims the oldest pending subtask; with none
+  // pending the part has no home, so the event is dropped.
   const partSession = str(part.sessionID);
   const foreign = partSession !== undefined && state.sessionId !== null && partSession !== state.sessionId;
   const resolved = foreign && partSession !== undefined ? resolveSubtask(partSession, state) : undefined;
@@ -396,6 +402,20 @@ function mapTool(
     next = { ...next, tools };
   }
 
+  // A top-level task tool call spawns a child session exactly like a
+  // `subtask` part does, so it queues as a pending scope for the next child
+  // session heard from (#5). A nested one belongs to a scope already.
+  if (parentItemId === undefined && isSubtaskTool(name)) {
+    if (prev === undefined && !settled) {
+      const scope: SubtaskScope = { id, name, title, ...(item.input !== undefined ? { input: item.input } : {}) };
+      next = { ...next, unboundSubtasks: [...next.unboundSubtasks, scope] };
+    } else if (settled && events.length > 0) {
+      // The tool's own settlement is authoritative (it carries the output), so
+      // its scope is released: a later child idle must not re-complete it.
+      next = releaseScope(id, next);
+    }
+  }
+
   // todowrite IS the plan (full-replacement semantics, deduplicated).
   if (name.toLowerCase() === 'todowrite') {
     const entries = planEntriesOf(toolState.input);
@@ -534,7 +554,7 @@ function mapSubtask(
     state: {
       ...state,
       startedItems: new Set(state.startedItems).add(id),
-      unboundSubtasks: [...state.unboundSubtasks, { id, title: item.title, input: item.input }],
+      unboundSubtasks: [...state.unboundSubtasks, { id, name: item.name, title: item.title, input: item.input }],
     },
   };
 }
@@ -565,6 +585,21 @@ function mapStepFinish(
       ? new Set(state.currentTurnMessageIds).add(messageID)
       : state.currentTurnMessageIds;
   return emitUsage({ ...state, usageByMessage, currentTurnMessageIds });
+}
+
+/** Drop the scope owned by item `id`, bound or still pending. */
+function releaseScope(id: string, state: OpencodeUiMapperState): OpencodeUiMapperState {
+  const pending = state.unboundSubtasks.filter((scope) => scope.id !== id);
+  const bound = [...state.subtasks].filter(([, scope]) => scope.id === id);
+  if (pending.length === state.unboundSubtasks.length && bound.length === 0) return state;
+  const subtasks = new Map(state.subtasks);
+  for (const [sessionId] of bound) subtasks.delete(sessionId);
+  return { ...state, subtasks, unboundSubtasks: pending };
+}
+
+function isSubtaskTool(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === 'task' || lower === 'subtask';
 }
 
 // ---- session lifecycle -------------------------------------------------------
@@ -634,19 +669,20 @@ function resolveSubtask(
 ): { state: OpencodeUiMapperState; subtask?: SubtaskScope } {
   const existing = state.subtasks.get(sessionId);
   if (existing !== undefined) return { state, subtask: existing };
-  if (state.unboundSubtasks.length !== 1) return { state };
-  const subtask = state.unboundSubtasks[0];
+  // First-in-first-out: the oldest pending subtask claims this child session
+  // and the rest stay queued for the children still to come (#5).
+  const [subtask, ...rest] = state.unboundSubtasks;
   if (subtask === undefined) return { state };
   const subtasks = new Map(state.subtasks);
   subtasks.set(sessionId, subtask);
-  return { state: { ...state, subtasks, unboundSubtasks: [] }, subtask };
+  return { state: { ...state, subtasks, unboundSubtasks: rest }, subtask };
 }
 
 function completedSubtask(subtask: SubtaskScope): UiToolItem {
   const item: UiToolItem = {
     kind: 'tool',
     id: subtask.id,
-    name: 'subtask',
+    name: subtask.name,
     toolKind: 'task',
     title: subtask.title,
     status: 'completed',

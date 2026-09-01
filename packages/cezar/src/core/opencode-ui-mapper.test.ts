@@ -559,6 +559,118 @@ describe('mapOpencodeEvent edge cases', () => {
     expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, mainIdle.state).events).toEqual([]);
   });
 
+  it('two pending subtasks bind to their child sessions first-in-first-out', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(part({ id: 'prt_st_a', type: 'subtask', prompt: 'Inspect A', description: 'Task A' }), state).state;
+    state = mapOpencodeEvent(part({ id: 'prt_st_b', type: 'subtask', prompt: 'Inspect B', description: 'Task B' }), state).state;
+    for (const [msg, sid] of [
+      ['msg_child_a', 'ses_child_a'],
+      ['msg_child_b', 'ses_child_b'],
+    ] as const) {
+      state = mapOpencodeEvent(
+        { type: 'message.updated', properties: { info: { id: msg, sessionID: sid, role: 'assistant' } } },
+        state,
+      ).state;
+    }
+    // The first child to speak takes the oldest pending subtask; the second takes the next one.
+    const a = mapOpencodeEvent(
+      part({ id: 'prt_a', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'A' }),
+      state,
+    );
+    expect(a.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_a', parentItemId: 'prt_st_a' } });
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      a.state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
+    // Each child's idle completes its own subtask, and only that one.
+    const idleB = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_b' } }, b.state);
+    expect(idleB.events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_st_b', status: 'completed' }) },
+    ]);
+    const idleA = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, idleB.state);
+    expect(idleA.events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_st_a', status: 'completed' }) },
+    ]);
+  });
+
+  it('a top-level task tool call is a pending subtask its child session binds to', () => {
+    let state = startedState();
+    const started = mapOpencodeEvent(
+      part({
+        id: 'prt_task',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Dig in', prompt: 'dig', subagent_type: 'general' } },
+      }),
+      state,
+    );
+    expect(started.events).toEqual([
+      {
+        type: 'item.started',
+        item: expect.objectContaining({ kind: 'tool', id: 'prt_task', name: 'task', toolKind: 'task', status: 'running' }),
+      },
+    ]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      started.state,
+    ).state;
+    const nested = mapOpencodeEvent(
+      part({ id: 'prt_c', messageID: 'msg_child', sessionID: 'ses_child', type: 'text', text: 'found it' }),
+      state,
+    );
+    expect(nested.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_c', parentItemId: 'prt_task' } });
+    // The child's idle completes the task item under its own name and title.
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, nested.state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: {
+          kind: 'tool',
+          id: 'prt_task',
+          name: 'task',
+          toolKind: 'task',
+          title: 'Task: Dig in',
+          status: 'completed',
+          input: { description: 'Dig in', prompt: 'dig', subagent_type: 'general' },
+        },
+      },
+    ]);
+  });
+
+  it('a task tool that settles releases its scope so the child idle does not re-complete it', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in' } } }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_c', messageID: 'msg_child', sessionID: 'ses_child', type: 'text', text: 'found it' }),
+      state,
+    ).state;
+    const done = mapOpencodeEvent(
+      part({
+        id: 'prt_task',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'completed', input: { description: 'Dig in' }, output: 'the answer' },
+      }),
+      state,
+    );
+    expect(done.events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_task', name: 'task', output: 'the answer' }) },
+    ]);
+    // The tool's own completion carried the output; a later child idle must not overwrite it.
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, done.state).events).toEqual([]);
+    // Nor does the main idle settle it a second time.
+    const mainIdle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: SESSION_ID } }, done.state);
+    expect(mainIdle.events).toEqual([{ type: 'turn.completed', turnId: 'turn_1', stopReason: 'end_turn' }]);
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);
