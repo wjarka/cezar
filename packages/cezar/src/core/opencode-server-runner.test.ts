@@ -380,6 +380,26 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     });
   });
 
+  it('queues a follow-up prompt until the current turn ends', async () => {
+    await withSession({}, async ({ events, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+
+      // Mid-turn steering: opencode gets the next prompt only once the
+      // current turn's idle has closed it, so each turn gets its own idle
+      // and its own turn-end instead of the first idle closing the second.
+      session.sendMessage([{ type: 'text', text: 'follow-up' }]);
+      await sleep(80);
+      expect(mock.promptPosts).toHaveLength(1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => mock.promptPosts.length === 2);
+      expect(count(events, 'turn-end')).toBe(1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => count(events, 'turn-end') === 2);
+    });
+  });
+
   it('ends the turn and the session when the event stream drops mid-turn', async () => {
     await withSession({}, async ({ events, mock, session }) => {
       await waitFor(() => mock.promptPosts.length === 1);

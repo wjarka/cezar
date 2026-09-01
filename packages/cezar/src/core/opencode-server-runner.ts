@@ -115,6 +115,10 @@ class OpencodeSession implements AgentSession {
   private turnActive = false;
   /** `finishTurn` ran for the current turn — repeats and stray idles no-op. */
   private turnEnded = false;
+  /** Settles when the open turn finishes; re-armed at each turn start. The
+   *  gate `prompt` waits on so turns never overlap (see there). */
+  private turnFinished: Promise<void> = Promise.resolve();
+  private turnFinishedResolve: () => void = () => {};
   /** Protocol v2 emission — additive alongside v1 (`onEvent` keeps flowing
    *  byte-identical); the channel is `opts.onUiEvent` (RunManager wiring
    *  lands in R2 step 2.1). Both streams take their turn-end from the wire
@@ -341,9 +345,19 @@ class OpencodeSession implements AgentSession {
   }
 
   private async prompt(text: string): Promise<void> {
-    if (!this.sessionId) return;
+    // One turn at a time. `prompt_async` acknowledges before the turn runs,
+    // so `ready` no longer serializes prompts the way the long-poll did — a
+    // follow-up posted mid-turn would share the turnActive/turnEnded pair
+    // with the running turn and let that turn's idle close this one. Waiters
+    // resume in FIFO order; a teardown (`finishTurn` runs on every exit
+    // path) releases them into the `serverOpen` check below.
+    while (this.turnActive) await this.turnFinished;
+    if (!this.sessionId || !this.serverOpen) return;
     this.turnActive = true;
     this.turnEnded = false;
+    this.turnFinished = new Promise((resolve) => {
+      this.turnFinishedResolve = resolve;
+    });
     // Turn boundary, v1 and v2 alike — the prompt POST is the turn start
     // (§7.1); the end comes from the SSE `session.idle`, never from the HTTP
     // response below. `POST /session/:id/message` long-polled the whole turn,
@@ -381,6 +395,7 @@ class OpencodeSession implements AgentSession {
     if (!this.turnActive || this.turnEnded) return;
     this.turnEnded = true;
     this.turnActive = false;
+    this.turnFinishedResolve();
     // A part that never saw `time.end` (abort, server quirk) still surfaces
     // its prose before the turn boundary (run.ts reads markers there).
     this.textCoalescer.flush();
