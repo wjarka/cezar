@@ -31,6 +31,39 @@ export interface OpencodeRunnerOptions {
 
 const SERVER_START_TIMEOUT_MS = 30_000;
 
+/**
+ * Node's fetch dispatches through an undici Agent whose default headers/body
+ * timeouts are 300s — long enough to look infinite and short enough to cut a
+ * real turn's SSE stream (or any long request) as `fetch failed` (#4,
+ * upstream #897). Build a no-timeout Agent from the undici BUILT-IN — never
+ * an npm dependency — and run without one where the runtime can't provide it.
+ */
+export function createNoTimeoutDispatcher(
+  getBuiltinModule: ((id: string) => unknown) | undefined,
+): unknown {
+  try {
+    const undici = getBuiltinModule?.('undici') as
+      | { Agent?: new (opts: { headersTimeout: number; bodyTimeout: number }) => unknown }
+      | undefined;
+    if (undici?.Agent) return new undici.Agent({ headersTimeout: 0, bodyTimeout: 0 });
+  } catch {
+    // No undici built-in — the runner still starts, on the default dispatcher.
+  }
+  return undefined;
+}
+
+let noTimeoutDispatcher: unknown;
+let dispatcherResolved = false;
+/** Lazy so a runtime without the built-in pays nothing until the first request. */
+function longPollDispatcher(): unknown {
+  if (!dispatcherResolved) {
+    dispatcherResolved = true;
+    const proc = process as { getBuiltinModule?: (id: string) => unknown };
+    noTimeoutDispatcher = createNoTimeoutDispatcher(proc.getBuiltinModule?.bind(proc));
+  }
+  return noTimeoutDispatcher;
+}
+
 /** Grace between the teardown SIGTERM and the SIGKILL that follows it. */
 export const KILL_GRACE_MS = 4_000;
 
@@ -110,11 +143,14 @@ class OpencodeSession implements AgentSession {
   private readonly msgRole = new Map<string, string>();
   private tokensUsed = 0;
   private lastCost = 0;
-  private turnInFlight = false;
+  /** A prompt was posted and its `session.idle` has not arrived yet. */
+  private turnActive = false;
+  /** `finishTurn` ran for the current turn — repeats and stray idles no-op. */
+  private turnEnded = false;
   /** Protocol v2 emission — additive alongside v1 (`onEvent` keeps flowing
    *  byte-identical); the channel is `opts.onUiEvent` (RunManager wiring
-   *  lands in R2 step 2.1). Unlike v1's HTTP-response-synthesized turn-end,
-   *  v2 takes its `turn.completed` from the wire `session.idle`. */
+   *  lands in R2 step 2.1). Both streams take their turn-end from the wire
+   *  `session.idle` (v1 since #4 — see `finishTurn`). */
   private uiState: OpencodeUiMapperState = createOpencodeUiState();
   private autoEndTimer: NodeJS.Timeout | undefined;
   private spawnFailed: Error | null = null;
@@ -194,7 +230,10 @@ class OpencodeSession implements AgentSession {
       await this.exited;
       if (this.spawnFailed) throw this.spawnFailed;
 
-      // Timeout/interrupt can cut the SSE feed mid-part — recover buffered prose.
+      // Timeout/interrupt can cut the SSE feed before its `session.idle` —
+      // close the turn (idempotent) so consumers still see the v1 boundary,
+      // and recover prose buffered mid-part.
+      this.finishTurn();
       this.textCoalescer.flush();
       // Chunks are whole blocks now (one per finished part), so newline-join
       // like the other runners, not the old delta concatenation.
@@ -337,9 +376,13 @@ class OpencodeSession implements AgentSession {
 
   private async prompt(text: string): Promise<void> {
     if (!this.sessionId) return;
-    this.turnInFlight = true;
-    // v2 turn boundary — the prompt POST is the turn start (§7.1); the end
-    // comes from the SSE `session.idle`, never from the HTTP response below.
+    this.turnActive = true;
+    this.turnEnded = false;
+    // Turn boundary, v1 and v2 alike — the prompt POST is the turn start
+    // (§7.1); the end comes from the SSE `session.idle`, never from the HTTP
+    // response below. `POST /session/:id/message` long-polled the whole turn,
+    // and undici's default 300s headers timeout ended it as `prompt failed:
+    // fetch failed` (#4, upstream #897); `prompt_async` returns immediately.
     this.emitUi(opencodeTurnStarted);
     const body: Record<string, unknown> = { parts: [{ type: 'text', text }] };
     // `spec.model` arrives already normalised to canonical `provider/model`
@@ -348,18 +391,30 @@ class OpencodeSession implements AgentSession {
     const id = parseModelIdentity(this.spec.model);
     if (id) body.model = { providerID: id.provider, modelID: id.model };
     try {
-      const res = await this.http('POST', `/session/${this.sessionId}/message`, body);
-      this.absorbUsage(res);
-    } finally {
-      this.turnInFlight = false;
-      // A part that never saw `time.end` (abort, server quirk) still surfaces
-      // its prose before the turn boundary (run.ts reads markers there).
-      this.textCoalescer.flush();
-      this.emit({ type: 'turn-end' });
-      if (this.opts.autoEndAfterFirstTurn && this.serverOpen && !this.autoEndTimer) {
-        this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
-        this.autoEndTimer.unref?.();
-      }
+      await this.http('POST', `/session/${this.sessionId}/prompt_async`, body);
+    } catch (err) {
+      // No turn started server-side, so no `session.idle` will ever close it —
+      // surface the failure and end the turn here instead of parking the run.
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit({ type: 'note', message: `opencode: prompt failed: ${message}` });
+      this.finishTurn();
+    }
+  }
+
+  /** The single v1 turn-end: from the session's own `session.idle`, the
+   *  prompt-POST failure path, or the teardown safety net — whichever comes
+   *  first; the guards make every later call a no-op. */
+  private finishTurn(): void {
+    if (!this.turnActive || this.turnEnded) return;
+    this.turnEnded = true;
+    this.turnActive = false;
+    // A part that never saw `time.end` (abort, server quirk) still surfaces
+    // its prose before the turn boundary (run.ts reads markers there).
+    this.textCoalescer.flush();
+    this.emit({ type: 'turn-end' });
+    if (this.opts.autoEndAfterFirstTurn && this.serverOpen && !this.autoEndTimer) {
+      this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
+      this.autoEndTimer.unref?.();
     }
   }
 
@@ -371,11 +426,17 @@ class OpencodeSession implements AgentSession {
   private async consumeEvents(): Promise<void> {
     if (!this.baseUrl) return;
     let res: Response;
+    const init: RequestInit = {
+      headers: { accept: 'text/event-stream' },
+      signal: this.sse.signal,
+    };
+    // A quiet stream (one long-running tool, no output) must outlive undici's
+    // default 300s body timeout. `dispatcher` is undici's RequestInit
+    // extension — real on Node's fetch, unknown to the DOM lib types.
+    const dispatcher = longPollDispatcher();
+    if (dispatcher) (init as { dispatcher?: unknown }).dispatcher = dispatcher;
     try {
-      res = await fetch(`${this.baseUrl}/event`, {
-        headers: { accept: 'text/event-stream' },
-        signal: this.sse.signal,
-      });
+      res = await fetch(`${this.baseUrl}/event`, init);
     } catch {
       return; // aborted or server gone — the turn response still carries results
     }
@@ -430,10 +491,21 @@ class OpencodeSession implements AgentSession {
       this.absorbUsage(info);
     } else if (type === 'message.part.updated' || type === 'message.part.created') {
       this.handlePart((props.part as Record<string, unknown>) ?? props);
+    } else if (type === 'session.idle') {
+      // THE turn-end signal. The SSE bus is server-wide, so a child session's
+      // (sub-agent's) idle must not close the main turn; an idle with no
+      // sessionID is treated as ours, like the v2 mapper does.
+      const sid = stringField(props, 'sessionID');
+      if (sid === undefined || sid === this.sessionId) this.finishTurn();
     }
   }
 
   private handlePart(part: Record<string, unknown>): void {
+    // The SSE bus carries every session on the server — drop parts that
+    // belong to another one (a sub-agent's stream is surfaced by v2 only).
+    const partSession = stringField(part, 'sessionID');
+    if (partSession !== undefined && this.sessionId !== undefined && partSession !== this.sessionId)
+      return;
     // Only surface parts of assistant messages — the user's own message streams
     // over the same feed. Role is known early (the message.updated event
     // precedes its parts); an unknown role means "not assistant yet" → skip.
@@ -504,11 +576,14 @@ class OpencodeSession implements AgentSession {
     body: unknown,
   ): Promise<Record<string, unknown>> {
     if (!this.baseUrl) throw new Error('opencode server not ready');
-    const res = await fetch(`${this.baseUrl}${path}`, {
+    const init: RequestInit = {
       method,
       headers: body !== undefined ? { 'content-type': 'application/json' } : {},
       body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    };
+    const dispatcher = longPollDispatcher();
+    if (dispatcher) (init as { dispatcher?: unknown }).dispatcher = dispatcher;
+    const res = await fetch(`${this.baseUrl}${path}`, init);
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       throw new Error(`${method} ${path} → ${res.status} ${detail.slice(0, 200)}`);
