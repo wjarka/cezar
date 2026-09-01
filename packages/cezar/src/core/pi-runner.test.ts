@@ -1,13 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AgentEvent } from './agent-runner.js';
 import { buildChildEnv } from './agent-env.js';
+import { parseAskMarker } from './ask.js';
 import { detectEnvironment } from './backend-detect.js';
 import { createRunner } from './runner-factory.js';
 import { buildPiArgs, PiRunner } from './pi-runner.js';
+import { appendTurnText } from '../workflows/run.js';
 
 /**
  * The `pi` runner (#387): a new AgentBackend slotted into the runner seam as
@@ -79,6 +81,219 @@ describe('a dry-run pi session emits normalized AgentEvents', () => {
     // Every backend's stream is terminated by exactly one `done`.
     expect(types.filter((t) => t === 'done')).toHaveLength(1);
     expect(result.text.length).toBeGreaterThan(0);
+  });
+
+  it('coalesces token-split text_delta into one v1 text so a CEZ:ASK marker still parses (#2)', async () => {
+    // Repro of open-mercato/cezar#902: Pi streams one text_delta per token.
+    // Emitting each as its own v1 `text` event made appendTurnText insert
+    // newlines between tokens, so CEZ:ASK\n{…} failed ASK_MARKER_RE.
+    const askJson = JSON.stringify({
+      questions: [
+        {
+          header: 'Design gate',
+          question: 'Ship the coalescer as shared V1TextCoalescer?',
+          multiSelect: false,
+          options: [
+            { label: 'Reuse coalescer', description: 'Match codex/opencode' },
+            { label: 'Local buffer', description: 'pendingText only in pi-runner' },
+          ],
+        },
+      ],
+    });
+    const fullText = `Pick one.\n\nCEZ:ASK ${askJson}`;
+    // Split so CEZ:ASK and the JSON body land in separate deltas — the exact
+    // boundary that used to break marker assembly when joined with `\n`.
+    const deltas = ['Pick one.\n\n', 'CEZ:ASK', ' ', askJson];
+    const mockPath = join(cwd, 'mock-pi-token-split.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+const deltas = ${JSON.stringify(deltas)};
+const full = ${JSON.stringify(fullText)};
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'tok-split' } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+    for (const delta of deltas) {
+      send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta, partial: {} } });
+    }
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: full, partial: {} } });
+    send({ type: 'message_end', message: { role: 'assistant', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+    send({ type: 'turn_end', message: {}, toolResults: [] });
+    send({ type: 'agent_end', messages: [], willRetry: false });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new PiRunner({ bin: mockPath });
+    const events: AgentEvent[] = [];
+    await runner.run({ userPrompt: 'ask me', cwd, timeoutMs: 10_000 }, (event) => events.push(event));
+
+    const textEvents = events.filter((e): e is Extract<AgentEvent, { type: 'text' }> => e.type === 'text');
+    // One complete block — not one event per token delta.
+    expect(textEvents).toHaveLength(1);
+    expect(textEvents[0]!.text).toBe(fullText);
+
+    // Same assembly path RunManager uses at turn-end — marker must survive.
+    let turnText = '';
+    for (const event of textEvents) turnText = appendTurnText(turnText, event.text);
+    const ask = parseAskMarker(turnText);
+    expect(ask).not.toBeNull();
+    expect(ask!.questions[0]!.header).toBe('Design gate');
+    expect(ask!.questions[0]!.options.map((o) => o.label)).toEqual(['Reuse coalescer', 'Local buffer']);
+  });
+
+  it('emits a second assistant text block after a tool when both use contentIndex 0', async () => {
+    // contentIndex restarts per Pi assistant message. V1TextCoalescer latches
+    // completed keys forever, so keying only on contentIndex drops every later
+    // index-0 block (post-tool prose, follow-up turns).
+    const mockPath = join(cwd, 'mock-pi-reuse-content-index.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+const streamText = (content) => {
+  send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+  send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: content, partial: {} } });
+  send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content, partial: {} } });
+  send({ type: 'message_end', message: { role: 'assistant', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+};
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'reuse-idx' } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    streamText('before tool');
+    send({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'read', args: { path: 'a.ts' } });
+    send({ type: 'tool_execution_end', toolCallId: 't1', isError: false, result: { content: [{ type: 'text', text: 'ok' }] } });
+    streamText('after tool');
+    send({ type: 'turn_end', message: {}, toolResults: [] });
+    send({ type: 'agent_end', messages: [], willRetry: false });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new PiRunner({ bin: mockPath });
+    const events: AgentEvent[] = [];
+    await runner.run({ userPrompt: 'use a tool', cwd, timeoutMs: 10_000 }, (event) => events.push(event));
+
+    const textEvents = events.filter((e): e is Extract<AgentEvent, { type: 'text' }> => e.type === 'text');
+    expect(textEvents.map((e) => e.text)).toEqual(['before tool', 'after tool']);
+  });
+
+  it('emits follow-up text after an interrupted contentIndex 0 block (flush without text_end)', async () => {
+    // flush() latches the generated key as done. If openTextBlockKeys still
+    // maps contentIndex 0 → that key, the next message reuses the dead key and
+    // every delta is dropped.
+    const mockPath = join(cwd, 'mock-pi-interrupted-text-block.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'interrupted' } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'partial only', partial: {} } });
+    // No text_end — tool boundary forces flush of the open block.
+    send({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'true' } });
+    send({ type: 'tool_execution_end', toolCallId: 't1', isError: false, result: { content: [{ type: 'text', text: 'ok' }] } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'after interrupt', partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'after interrupt', partial: {} } });
+    send({ type: 'message_end', message: { role: 'assistant', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+    send({ type: 'turn_end', message: {}, toolResults: [] });
+    send({ type: 'agent_end', messages: [], willRetry: false });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new PiRunner({ bin: mockPath });
+    const events: AgentEvent[] = [];
+    await runner.run({ userPrompt: 'interrupt me', cwd, timeoutMs: 10_000 }, (event) => events.push(event));
+
+    const textEvents = events.filter((e): e is Extract<AgentEvent, { type: 'text' }> => e.type === 'text');
+    expect(textEvents.map((e) => e.text)).toEqual(['partial only', 'after interrupt']);
+  });
+
+  it('keeps one text block when a mid-stream prompt ack arrives between text_delta events', async () => {
+    // sendMessage uses streamingBehavior: 'steer' while a turn is open. A
+    // prompt `response` ack must not flush/clear the in-flight block, or the
+    // partial + full snapshot emit twice and appendTurnText inserts a newline.
+    const full = 'hello world';
+    const mockPath = join(cwd, 'mock-pi-steer-ack-mid-text.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'steer-ack' } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'hello ', partial: {} } });
+    // Mid-stream steer/prompt acknowledgement — must not split the block.
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'world', partial: {} } });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: ${JSON.stringify(full)}, partial: {} } });
+    send({ type: 'message_end', message: { role: 'assistant', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+    send({ type: 'turn_end', message: {}, toolResults: [] });
+    send({ type: 'agent_end', messages: [], willRetry: false });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new PiRunner({ bin: mockPath });
+    const events: AgentEvent[] = [];
+    await runner.run({ userPrompt: 'steer me', cwd, timeoutMs: 10_000 }, (event) => events.push(event));
+
+    const textEvents = events.filter((e): e is Extract<AgentEvent, { type: 'text' }> => e.type === 'text');
+    expect(textEvents.map((e) => e.text)).toEqual([full]);
+    let turnText = '';
+    for (const event of textEvents) turnText = appendTurnText(turnText, event.text);
+    expect(turnText).toBe(full);
   });
 });
 
