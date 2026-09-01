@@ -2,11 +2,10 @@
 // Test-only mock of `opencode serve` — speaks just enough of the HTTP+SSE
 // API (§4 of agent-event-protocols.md) for the runner wiring test in
 // `opencode-ui-mapper.test.ts`: POST /session, GET /event (SSE bus), one
-// scripted prompt turn. Deliberately reproduces the real server's ordering
-// quirk that motivates the v2 turn-end fix: the HTTP prompt response
-// resolves BEFORE the final SSE parts and the `session.idle` — so a correct
-// v2 stream must take `turn.completed` from `session.idle`, not from the
-// HTTP response (which is where v1 synthesizes its `turn-end`).
+// scripted prompt turn. Like the real server's `prompt_async`, the HTTP
+// response resolves immediately — every part and the closing `session.idle`
+// arrive over SSE afterwards, so a correct stream (v1 and v2 alike) must
+// take its turn-end from `session.idle`, never from the HTTP response.
 import { createServer } from 'node:http';
 
 const args = process.argv.slice(2);
@@ -54,7 +53,13 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ id: SESSION_ID, title: 'cezar task' }));
       return;
     }
-    if (req.method === 'POST' && url === `/session/${SESSION_ID}/message`) {
+    if (
+      req.method === 'POST' &&
+      (url === `/session/${SESSION_ID}/prompt_async` || url === `/session/${SESSION_ID}/message`)
+    ) {
+      // `prompt_async` semantics: acknowledge now, stream the turn over SSE.
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ info: info({}), parts: [] }));
       send({ type: 'message.updated', properties: { info: info({}) } });
       send({
         type: 'message.part.updated',
@@ -117,10 +122,6 @@ const server = createServer((req, res) => {
           info: info({ cost: 0.0021, tokens: { input: 1200, output: 300, reasoning: 0, cache: { read: 0, write: 0 } } }),
         },
       });
-      // Respond to the prompt POST now — BEFORE the final text part and the
-      // idle signal, like the real server under streaming load.
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ info: info({ cost: 0.0021 }), parts: [] }));
       setTimeout(() => {
         send({
           type: 'message.part.updated',

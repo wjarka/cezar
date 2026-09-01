@@ -6,7 +6,8 @@
  * produce. Plus edge cases (never-throw, cursor/delta correctness, the
  * pending-phase distinction, cost propagation, session.idle semantics) and a
  * live wiring test through the real runner against the bundled mock server —
- * including the session.idle-vs-HTTP-response ordering v1 gets wrong.
+ * including that both streams take their turn-end from `session.idle`, not
+ * from the `prompt_async` HTTP response (#4).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -587,8 +588,7 @@ describe('OpencodeServerRunner v2 wiring (against the bundled mock server)', () 
     );
     await session.result;
 
-    // v1 stays intact (old NDJSON recordings must keep replaying) — including its
-    // HTTP-response-synthesized turn-end.
+    // v1 stays intact (old NDJSON recordings must keep replaying).
     const v1Types = v1.map((e) => e.type);
     expect(v1Types).toContain('session');
     expect(v1Types).toContain('text');
@@ -625,10 +625,15 @@ describe('OpencodeServerRunner v2 wiring (against the bundled mock server)', () 
       costUsd: 0.0021,
     });
 
-    // The ordering proof: the mock resolves the HTTP prompt response BEFORE
-    // streaming the final text part and session.idle. v1's turn-end is
-    // synthesized from that response; v2's turn.completed must come from
-    // session.idle — i.e. AFTER the late "Done." delta.
+    // The ordering proof: the mock acknowledges the prompt_async POST BEFORE
+    // streaming any part. Both streams must take their turn-end from
+    // session.idle — i.e. AFTER the late "Done." delta/text (#4: the old
+    // long-poll synthesized v1's turn-end from the HTTP response, which
+    // undici's 300s timeout turned into a mid-turn `prompt failed`).
+    const v1LateText = v1.findIndex((e) => e.type === 'text' && e.text === 'Done.');
+    const v1TurnEnd = v1.findIndex((e) => e.type === 'turn-end');
+    expect(v1LateText).toBeGreaterThan(-1);
+    expect(v1TurnEnd).toBeGreaterThan(v1LateText);
     const lateDelta = v2.findIndex((e) => e.type === 'item.delta' && e.itemId === 'prt_mock_t2');
     const turnDone = v2.findIndex((e) => e.type === 'turn.completed');
     expect(lateDelta).toBeGreaterThan(-1);

@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
 import type {
   AgentEvent,
   AgentRunResult,
@@ -110,11 +111,18 @@ class OpencodeSession implements AgentSession {
   private readonly msgRole = new Map<string, string>();
   private tokensUsed = 0;
   private lastCost = 0;
-  private turnInFlight = false;
+  /** A prompt was posted and its `session.idle` has not arrived yet. */
+  private turnActive = false;
+  /** `finishTurn` ran for the current turn — repeats and stray idles no-op. */
+  private turnEnded = false;
+  /** Settles when the open turn finishes; re-armed at each turn start. The
+   *  gate `prompt` waits on so turns never overlap (see there). */
+  private turnFinished: Promise<void> = Promise.resolve();
+  private turnFinishedResolve: () => void = () => {};
   /** Protocol v2 emission — additive alongside v1 (`onEvent` keeps flowing
    *  byte-identical); the channel is `opts.onUiEvent` (RunManager wiring
-   *  lands in R2 step 2.1). Unlike v1's HTTP-response-synthesized turn-end,
-   *  v2 takes its `turn.completed` from the wire `session.idle`. */
+   *  lands in R2 step 2.1). Both streams take their turn-end from the wire
+   *  `session.idle` (v1 since #4 — see `finishTurn`). */
   private uiState: OpencodeUiMapperState = createOpencodeUiState();
   private autoEndTimer: NodeJS.Timeout | undefined;
   private spawnFailed: Error | null = null;
@@ -194,7 +202,10 @@ class OpencodeSession implements AgentSession {
       await this.exited;
       if (this.spawnFailed) throw this.spawnFailed;
 
-      // Timeout/interrupt can cut the SSE feed mid-part — recover buffered prose.
+      // Timeout/interrupt can cut the SSE feed before its `session.idle` —
+      // close the turn (idempotent) so consumers still see the v1 boundary,
+      // and recover prose buffered mid-part.
+      this.finishTurn();
       this.textCoalescer.flush();
       // Chunks are whole blocks now (one per finished part), so newline-join
       // like the other runners, not the old delta concatenation.
@@ -230,12 +241,10 @@ class OpencodeSession implements AgentSession {
     }
     const text = textOf(content);
     if (!text) return true;
-    void this.ready
-      .then(() => this.prompt(text))
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.emit({ type: 'note', message: `opencode: prompt failed: ${message}` });
-      });
+    // `prompt` already emitted the note and closed the turn before rethrowing,
+    // and a rejected `ready` already failed the session on the result path —
+    // there is nothing left to report here.
+    void this.ready.then(() => this.prompt(text)).catch(() => undefined);
     return true;
   }
 
@@ -336,10 +345,24 @@ class OpencodeSession implements AgentSession {
   }
 
   private async prompt(text: string): Promise<void> {
-    if (!this.sessionId) return;
-    this.turnInFlight = true;
-    // v2 turn boundary — the prompt POST is the turn start (§7.1); the end
-    // comes from the SSE `session.idle`, never from the HTTP response below.
+    // One turn at a time. `prompt_async` acknowledges before the turn runs,
+    // so `ready` no longer serializes prompts the way the long-poll did — a
+    // follow-up posted mid-turn would share the turnActive/turnEnded pair
+    // with the running turn and let that turn's idle close this one. Waiters
+    // resume in FIFO order; a teardown (`finishTurn` runs on every exit
+    // path) releases them into the `serverOpen` check below.
+    while (this.turnActive) await this.turnFinished;
+    if (!this.sessionId || !this.serverOpen) return;
+    this.turnActive = true;
+    this.turnEnded = false;
+    this.turnFinished = new Promise((resolve) => {
+      this.turnFinishedResolve = resolve;
+    });
+    // Turn boundary, v1 and v2 alike — the prompt POST is the turn start
+    // (§7.1); the end comes from the SSE `session.idle`, never from the HTTP
+    // response below. `POST /session/:id/message` long-polled the whole turn,
+    // and undici's default 300s headers timeout ended it as `prompt failed:
+    // fetch failed` (#4, upstream #897); `prompt_async` returns immediately.
     this.emitUi(opencodeTurnStarted);
     const body: Record<string, unknown> = { parts: [{ type: 'text', text }] };
     // `spec.model` arrives already normalised to canonical `provider/model`
@@ -348,18 +371,38 @@ class OpencodeSession implements AgentSession {
     const id = parseModelIdentity(this.spec.model);
     if (id) body.model = { providerID: id.provider, modelID: id.model };
     try {
-      const res = await this.http('POST', `/session/${this.sessionId}/message`, body);
-      this.absorbUsage(res);
-    } finally {
-      this.turnInFlight = false;
-      // A part that never saw `time.end` (abort, server quirk) still surfaces
-      // its prose before the turn boundary (run.ts reads markers there).
-      this.textCoalescer.flush();
-      this.emit({ type: 'turn-end' });
-      if (this.opts.autoEndAfterFirstTurn && this.serverOpen && !this.autoEndTimer) {
-        this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
-        this.autoEndTimer.unref?.();
-      }
+      await this.http('POST', `/session/${this.sessionId}/prompt_async`, body);
+    } catch (err) {
+      // No turn started server-side, so no `session.idle` will ever close it —
+      // surface the failure and end the turn here instead of parking the run.
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit({ type: 'note', message: `opencode: prompt failed: ${message}` });
+      this.finishTurn();
+      // Rethrow so `bootstrap` still rejects when the FIRST prompt cannot be
+      // posted: the run's result path turns that into a v1 `error`, which is
+      // the only event run.ts records failure from — a swallowed rejection
+      // would let an empty result mark the step successful. `sendMessage`
+      // discards the rethrow (the note + turn-end above already told the
+      // session's user), so a mid-session failure stays non-fatal, as before.
+      throw err;
+    }
+  }
+
+  /** The single v1 turn-end: from the session's own `session.idle`, the
+   *  prompt-POST failure path, or the teardown safety net — whichever comes
+   *  first; the guards make every later call a no-op. */
+  private finishTurn(): void {
+    if (!this.turnActive || this.turnEnded) return;
+    this.turnEnded = true;
+    this.turnActive = false;
+    this.turnFinishedResolve();
+    // A part that never saw `time.end` (abort, server quirk) still surfaces
+    // its prose before the turn boundary (run.ts reads markers there).
+    this.textCoalescer.flush();
+    this.emit({ type: 'turn-end' });
+    if (this.opts.autoEndAfterFirstTurn && this.serverOpen && !this.autoEndTimer) {
+      this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
+      this.autoEndTimer.unref?.();
     }
   }
 
@@ -367,30 +410,54 @@ class OpencodeSession implements AgentSession {
 
   /** Resolves once the SSE stream is CONNECTED (headers in) — the frames are
    *  then drained in the background. Callers await the connection so no
-   *  event emitted after this resolves can be missed. */
+   *  event emitted after this resolves can be missed.
+   *
+   *  Speaks node:http, not fetch: undici's default Agent cuts a response
+   *  body idle for 300s, which would sever a quiet turn's bus mid-run (#4) —
+   *  node's own client has no idle timeout. (`process.getBuiltinModule`
+   *  cannot fix that: undici is bundled into node but not exposed as a
+   *  built-in, so there is no no-timeout dispatcher to hand fetch without
+   *  taking undici as a real dependency.)
+   *
+   *  A connection that cannot be established throws, failing `bootstrap`:
+   *  with `prompt_async` this stream is the only source of turn-ends, so a
+   *  session that cannot hear it is dead on arrival, not degraded. */
   private async consumeEvents(): Promise<void> {
     if (!this.baseUrl) return;
-    let res: Response;
+    let res: IncomingMessage;
     try {
-      res = await fetch(`${this.baseUrl}/event`, {
-        headers: { accept: 'text/event-stream' },
-        signal: this.sse.signal,
+      res = await new Promise<IncomingMessage>((resolve, reject) => {
+        const req = httpRequest(
+          `${this.baseUrl}/event`,
+          { headers: { accept: 'text/event-stream' }, signal: this.sse.signal },
+          resolve,
+        );
+        req.on('error', reject);
+        req.end();
       });
-    } catch {
-      return; // aborted or server gone — the turn response still carries results
+    } catch (err) {
+      if (this.sse.signal.aborted) return; // torn down during bootstrap — not a failure
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`event stream failed to connect: ${message}`);
     }
-    if (!res.body) return;
-    void this.readEvents(res.body.getReader());
+    // node:http hands over EVERY response, error statuses included — a proxy's
+    // 401 or a non-SSE 500 body is not an event bus, however well it parses.
+    const status = res.statusCode ?? 0;
+    if (status < 200 || status >= 300) {
+      res.resume(); // discard the body so the socket is released
+      throw new Error(`event stream failed to connect: HTTP ${status}`);
+    }
+    void this.readEvents(res);
   }
 
-  private async readEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
-    const decoder = new TextDecoder();
+  private async readEvents(res: IncomingMessage): Promise<void> {
+    // StringDecoder under the hood — multi-byte characters split across
+    // chunks arrive whole, like the TextDecoder streaming mode did.
+    res.setEncoding('utf8');
     let buffer = '';
     try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      for await (const chunk of res) {
+        buffer += chunk as string;
         let sep: number;
         while ((sep = buffer.indexOf('\n\n')) >= 0) {
           const frame = buffer.slice(0, sep);
@@ -400,6 +467,19 @@ class OpencodeSession implements AgentSession {
       }
     } catch {
       // aborted — normal on end()/interrupt
+    } finally {
+      // `session.idle` rides this stream and nothing else — a feed that dies
+      // while the server is still up would otherwise park the current turn
+      // forever and leave every later prompt unanswerable. An `error`, not a
+      // note: the turn's remaining output is lost, so the step must record a
+      // failure (run.ts classifies from v1 `error` only), never pass as an
+      // empty success. Then close the turn (flushing what did arrive) and end
+      // the session; "Continue" resumes it on a fresh server.
+      if (this.serverOpen && !this.sse.signal.aborted) {
+        this.emit({ type: 'error', message: 'opencode: event stream closed unexpectedly' });
+        this.finishTurn();
+        this.end();
+      }
     }
   }
 
@@ -430,10 +510,31 @@ class OpencodeSession implements AgentSession {
       this.absorbUsage(info);
     } else if (type === 'message.part.updated' || type === 'message.part.created') {
       this.handlePart((props.part as Record<string, unknown>) ?? props);
+    } else if (type === 'session.idle') {
+      // THE turn-end signal. The SSE bus is server-wide, so a child session's
+      // (sub-agent's) idle must not close the main turn; an idle with no
+      // sessionID is treated as ours, like the v2 mapper does.
+      const sid = stringField(props, 'sessionID');
+      if (sid === undefined || sid === this.sessionId) this.finishTurn();
+    } else if (type === 'session.error') {
+      // The wire's only failure signal, now that the prompt POST returns
+      // before the turn runs: forward it to v1, whose `error` events are what
+      // run.ts records failed steps from — dropped, the terminal idle would
+      // file a provider/auth failure as a successful step. The idle that
+      // follows still closes the turn.
+      const sid = stringField(props, 'sessionID');
+      if (sid === undefined || sid === this.sessionId) {
+        this.emit({ type: 'error', message: `opencode: ${sessionErrorText(props.error)}` });
+      }
     }
   }
 
   private handlePart(part: Record<string, unknown>): void {
+    // The SSE bus carries every session on the server — drop parts that
+    // belong to another one (a sub-agent's stream is surfaced by v2 only).
+    const partSession = stringField(part, 'sessionID');
+    if (partSession !== undefined && this.sessionId !== undefined && partSession !== this.sessionId)
+      return;
     // Only surface parts of assistant messages — the user's own message streams
     // over the same feed. Role is known early (the message.updated event
     // precedes its parts); an unknown role means "not assistant yet" → skip.
@@ -504,6 +605,8 @@ class OpencodeSession implements AgentSession {
     body: unknown,
   ): Promise<Record<string, unknown>> {
     if (!this.baseUrl) throw new Error('opencode server not ready');
+    // Plain fetch is fine here: every call is a short round-trip now that
+    // prompts go through `prompt_async` — nothing long-polls anymore.
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: body !== undefined ? { 'content-type': 'application/json' } : {},
@@ -559,6 +662,22 @@ function textOf(content: ContentBlock[]): string {
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
   const v = obj[key];
   return typeof v === 'string' ? v : undefined;
+}
+
+/** Same reading of the wire error shape as the v2 mapper's `errorText`
+ *  (`opencode-ui-mapper.ts`): a bare string, `{message}`, `{data:{message}}`
+ *  (the real server's `ProviderAuthError` shape), or `{name}` as a last resort. */
+function sessionErrorText(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (typeof error !== 'object' || error === null) return 'session error';
+  const rec = error as Record<string, unknown>;
+  const data = typeof rec.data === 'object' && rec.data !== null ? (rec.data as Record<string, unknown>) : undefined;
+  return (
+    stringField(rec, 'message') ??
+    (data && stringField(data, 'message')) ??
+    stringField(rec, 'name') ??
+    'session error'
+  );
 }
 
 function numField(obj: Record<string, unknown>, key: string): number {
