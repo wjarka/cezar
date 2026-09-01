@@ -832,6 +832,90 @@ describe('mapOpencodeEvent edge cases', () => {
     ]);
   });
 
+  it('a task tool that names its child session in metadata binds to it, ahead of the FIFO queue', () => {
+    let state = startedState();
+    // Task B is queued first with no wire link; task A arrives with its child session id.
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task_b', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Task B' } } }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task A' }, metadata: { parentSessionId: SESSION_ID, sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    const a = mapOpencodeEvent(
+      part({ id: 'prt_a', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'A' }),
+      state,
+    );
+    expect(a.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_a', parentItemId: 'prt_task_a' } });
+    // Task B is still pending for the next unknown child.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      a.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
+  });
+
+  it('a task that settles before its child ever spoke still tombstones the child named in metadata', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task A' }, metadata: { sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task_b', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Task B' } } }),
+      state,
+    ).state;
+    // Task A settles with no event from child A having arrived.
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'completed', input: { description: 'Task A' }, output: 'a', metadata: { sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    // Child A's first (late) event must not take task B.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    const late = mapOpencodeEvent(
+      part({ id: 'prt_a_late', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'late' }),
+      state,
+    );
+    expect(late.events).toEqual([]);
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, late.state).events).toEqual([]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      late.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);

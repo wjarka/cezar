@@ -27,9 +27,12 @@
  *    `error→failed`);
  *  - the SSE bus is server-wide: parts from a foreign session id are a
  *    subtask's child session and nest via `parentItemId` (§7.1). A `subtask`
- *    part or a top-level `task` tool call queues a pending scope, and child
- *    sessions claim pending scopes first-in-first-out as they are heard from
- *    (#5); anything foreign outside a subtask scope is dropped.
+ *    part or a top-level `task` tool call opens a scope: the task tool names
+ *    its child (`metadata.sessionId`) and binds to it outright, while a
+ *    scope with no wire link queues and child sessions claim queued scopes
+ *    first-in-first-out as they are heard from (#5). Closed children are
+ *    tombstoned for the mapper's lifetime; anything foreign outside a
+ *    subtask scope is dropped.
  */
 
 import type {
@@ -65,6 +68,10 @@ interface SubtaskScope {
   readonly name: string;
   readonly title: string;
   readonly input?: unknown;
+  /** The child session the wire named for this scope, when it did: opencode's
+   *  task tool publishes `metadata.sessionId` on its running snapshot right
+   *  after creating the child. Known → bound directly, never through FIFO. */
+  readonly childSession?: string;
 }
 
 export interface OpencodeUiMapperState {
@@ -417,23 +424,33 @@ function mapTool(
   }
 
   // A top-level task tool call spawns a child session exactly like a
-  // `subtask` part does, so it queues as a pending scope for the next child
-  // session heard from (#5). A nested one belongs to a scope already.
+  // `subtask` part does (#5). When the snapshot names that child
+  // (`metadata.sessionId`, published as soon as the child exists) the scope
+  // binds to it outright; otherwise it queues for the next child session
+  // heard from. A nested one belongs to a scope already.
   if (parentItemId === undefined && isSubtaskTool(name)) {
-    const scope: SubtaskScope = { id, name, title, ...(item.input !== undefined ? { input: item.input } : {}) };
-    if (prev === undefined && !settled) {
-      next = { ...next, unboundSubtasks: [...next.unboundSubtasks, scope] };
-    } else if (!settled) {
+    const childSession = metadata ? (str(metadata.sessionId) ?? str(metadata.sessionID)) : undefined;
+    const scope: SubtaskScope = {
+      id,
+      name,
+      title,
+      ...(item.input !== undefined ? { input: item.input } : {}),
+      ...(childSession !== undefined ? { childSession } : {}),
+    };
+    if (!settled) {
       // OpenCode publishes the part before its arguments finish parsing, so
       // the first snapshot is often `{}` and later ones fill the input in —
       // sometimes without moving the status or the derived title, i.e. with
       // no item event. The scope follows every snapshot regardless, or the
       // child's idle would complete it with stale metadata.
-      next = refreshScope(scope, next);
-    } else if (settled && events.length > 0) {
+      next = prev === undefined ? { ...next, unboundSubtasks: [...next.unboundSubtasks, scope] } : refreshScope(scope, next);
+      if (childSession !== undefined) next = bindScope(scope, childSession, next);
+    } else if (events.length > 0) {
       // The tool's own settlement is authoritative (it carries the output), so
-      // its scope is released: a later child idle must not re-complete it.
-      next = releaseScope(id, next);
+      // its scope is released: a later child idle must not re-complete it. A
+      // child the wire named is closed too, even one that never spoke —
+      // otherwise its late first event would take a sibling's scope.
+      next = releaseScope(id, childSession, next);
     }
   }
 
@@ -627,20 +644,45 @@ function refreshScope(scope: SubtaskScope, state: OpencodeUiMapperState): Openco
 }
 
 function sameScope(a: SubtaskScope, b: SubtaskScope): boolean {
-  return a.name === b.name && a.title === b.title && JSON.stringify(a.input) === JSON.stringify(b.input);
+  return (
+    a.name === b.name &&
+    a.title === b.title &&
+    a.childSession === b.childSession &&
+    JSON.stringify(a.input) === JSON.stringify(b.input)
+  );
 }
 
-/** Drop the scope owned by item `id`, bound or still pending. */
-function releaseScope(id: string, state: OpencodeUiMapperState): OpencodeUiMapperState {
+/** Bind `scope` to the child session the wire named for it: out of the
+ *  pending queue and into the session map. A scope FIFO had already guessed
+ *  onto that session goes back to the head of the queue — the wire outranks
+ *  the guess, and that scope's real child is still to be heard from. */
+function bindScope(scope: SubtaskScope, childSession: string, state: OpencodeUiMapperState): OpencodeUiMapperState {
+  if (state.closedSessions.has(childSession)) return releaseScope(scope.id, undefined, state);
+  const current = state.subtasks.get(childSession);
+  if (current?.id === scope.id && !state.unboundSubtasks.some((s) => s.id === scope.id)) return state;
+  const unboundSubtasks = state.unboundSubtasks.filter((s) => s.id !== scope.id);
+  if (current !== undefined && current.id !== scope.id) unboundSubtasks.unshift(current);
+  const subtasks = new Map(state.subtasks);
+  for (const [sessionId, s] of state.subtasks) if (s.id === scope.id && sessionId !== childSession) subtasks.delete(sessionId);
+  subtasks.set(childSession, scope);
+  return { ...state, subtasks, unboundSubtasks };
+}
+
+/** Drop the scope owned by item `id`, bound or still pending, closing every
+ *  child session it was bound to plus the one the wire named (if any). */
+function releaseScope(id: string, childSession: string | undefined, state: OpencodeUiMapperState): OpencodeUiMapperState {
   const pending = state.unboundSubtasks.filter((scope) => scope.id !== id);
   const bound = [...state.subtasks].filter(([, scope]) => scope.id === id);
-  if (pending.length === state.unboundSubtasks.length && bound.length === 0) return state;
+  const named = childSession ?? state.unboundSubtasks.find((scope) => scope.id === id)?.childSession;
+  const closeNamed = named !== undefined && !state.closedSessions.has(named);
+  if (pending.length === state.unboundSubtasks.length && bound.length === 0 && !closeNamed) return state;
   const subtasks = new Map(state.subtasks);
   const closedSessions = new Set(state.closedSessions);
   for (const [sessionId] of bound) {
     subtasks.delete(sessionId);
     closedSessions.add(sessionId);
   }
+  if (named !== undefined) closedSessions.add(named);
   return { ...state, subtasks, unboundSubtasks: pending, closedSessions };
 }
 
