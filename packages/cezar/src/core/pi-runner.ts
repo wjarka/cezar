@@ -77,6 +77,20 @@ export class PiRunner implements AgentRunner {
       textChunks.push(text);
       onEvent?.({ type: 'text', text });
     });
+    /** Pi's `contentIndex` restarts at 0 on every assistant message; the
+     *  coalescer latches completed keys for the session. Map each open index
+     *  to a once-per-block id so a later message's index-0 is not dropped. */
+    let textBlockSeq = 0;
+    const openTextBlockKeys = new Map<number, string>();
+    const textBlockKey = (contentIndex: unknown): string | undefined => {
+      if (typeof contentIndex !== 'number') return undefined;
+      let key = openTextBlockKeys.get(contentIndex);
+      if (!key) {
+        key = `pi-text-${++textBlockSeq}`;
+        openTextBlockKeys.set(contentIndex, key);
+      }
+      return key;
+    };
     const toolCalls: AgentToolCallRecord[] = [];
     let sessionId = spec.sessionId;
     let tokensUsed = 0;
@@ -184,13 +198,13 @@ export class PiRunner implements AgentRunner {
             onEvent?.({ type: 'error', message: rpcError(value) });
           } else if (value.type === 'message_update' && isRecord(value.assistantMessageEvent)) {
             const update = value.assistantMessageEvent;
-            const contentKey =
-              typeof update.contentIndex === 'number' ? String(update.contentIndex) : undefined;
+            const contentKey = textBlockKey(update.contentIndex);
             if (update.type === 'text_delta' && typeof update.delta === 'string') {
               textCoalescer.append(contentKey, update.delta);
             } else if (update.type === 'text_end') {
               const snapshot = typeof update.content === 'string' ? update.content : undefined;
               textCoalescer.complete(contentKey, snapshot);
+              if (typeof update.contentIndex === 'number') openTextBlockKeys.delete(update.contentIndex);
             }
           } else if (value.type === 'message_end' && isRecord(value.message) && value.message.role === 'assistant') {
             textCoalescer.flush();
