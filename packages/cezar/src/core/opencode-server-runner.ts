@@ -516,6 +516,16 @@ class OpencodeSession implements AgentSession {
       // sessionID is treated as ours, like the v2 mapper does.
       const sid = stringField(props, 'sessionID');
       if (sid === undefined || sid === this.sessionId) this.finishTurn();
+    } else if (type === 'session.error') {
+      // The wire's only failure signal, now that the prompt POST returns
+      // before the turn runs: forward it to v1, whose `error` events are what
+      // run.ts records failed steps from — dropped, the terminal idle would
+      // file a provider/auth failure as a successful step. The idle that
+      // follows still closes the turn.
+      const sid = stringField(props, 'sessionID');
+      if (sid === undefined || sid === this.sessionId) {
+        this.emit({ type: 'error', message: `opencode: ${sessionErrorText(props.error)}` });
+      }
     }
   }
 
@@ -652,6 +662,22 @@ function textOf(content: ContentBlock[]): string {
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
   const v = obj[key];
   return typeof v === 'string' ? v : undefined;
+}
+
+/** Same reading of the wire error shape as the v2 mapper's `errorText`
+ *  (`opencode-ui-mapper.ts`): a bare string, `{message}`, `{data:{message}}`
+ *  (the real server's `ProviderAuthError` shape), or `{name}` as a last resort. */
+function sessionErrorText(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (typeof error !== 'object' || error === null) return 'session error';
+  const rec = error as Record<string, unknown>;
+  const data = typeof rec.data === 'object' && rec.data !== null ? (rec.data as Record<string, unknown>) : undefined;
+  return (
+    stringField(rec, 'message') ??
+    (data && stringField(data, 'message')) ??
+    stringField(rec, 'name') ??
+    'session error'
+  );
 }
 
 function numField(obj: Record<string, unknown>, key: string): number {

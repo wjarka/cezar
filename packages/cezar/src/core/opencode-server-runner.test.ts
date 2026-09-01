@@ -380,6 +380,32 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     });
   });
 
+  it('forwards a session.error into the v1 error stream before the terminal idle', async () => {
+    await withSession({}, async ({ events, mock }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+
+      // Provider/auth failures arrive ONLY as `session.error` frames now that
+      // the prompt POST returns before the turn runs — dropping them would
+      // let the terminal idle file a failed turn as a successful step.
+      mock.send({
+        type: 'session.error',
+        properties: { sessionID: 'ses_other', error: { name: 'X', data: { message: 'not ours' } } },
+      });
+      mock.send({
+        type: 'session.error',
+        properties: {
+          sessionID: 'ses_test',
+          error: { name: 'ProviderAuthError', data: { message: 'API key expired' } },
+        },
+      });
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => count(events, 'turn-end') === 1);
+
+      const errors = events.filter((e) => e.type === 'error').map((e) => e.message);
+      expect(errors).toEqual(['opencode: API key expired']);
+    });
+  });
+
   it('queues a follow-up prompt until the current turn ends', async () => {
     await withSession({}, async ({ events, mock, session }) => {
       await waitFor(() => mock.promptPosts.length === 1);
