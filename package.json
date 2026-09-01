@@ -29,7 +29,7 @@
     "server-uninstall": "npm run server-uninstall -w @open-mercato/cezar --",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:unit": "npm run test:unit -w @open-mercato/cezar",
+    "test:unit": "npm run test:unit -w @open-mercato/cezar && node --test .github/scripts/*.test.cjs",
     "test:package": "npm run test:package -w @open-mercato/cezar",
     "test:e2e": "sh .ai/scripts/e2e.sh",
     "pretypecheck": "npm run build:server",
