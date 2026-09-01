@@ -16,6 +16,20 @@ body:
       description: The concrete change.
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the system this issue touches.
+      options:
+        - area-cezar
+        - area-web
+        - area-contract
+        - area-api-client
+        - area-ci
+        - area-docs
+    validations:
+      required: true
   - type: textarea
     id: acceptance-criteria
     attributes:
