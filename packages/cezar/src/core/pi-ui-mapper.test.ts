@@ -153,4 +153,16 @@ describe('pi text blocks as distinct v2 items', () => {
     expect(completed.map((item) => item.text)).toEqual(['first', 'second']);
     expect(completed[0]!.id).not.toBe(completed[1]!.id);
   });
+
+  it('ignores a malformed message_end without closing open text', () => {
+    const events = feed([
+      textUpdate('text_delta', { delta: 'Hello' }),
+      { type: 'message_end' },
+      textUpdate('text_delta', { delta: ' world' }),
+      textUpdate('text_end', { content: 'Hello world' }),
+    ]);
+    const completed = completedMessages(events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]!.text).toBe('Hello world');
+  });
 });
