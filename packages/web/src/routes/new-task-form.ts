@@ -62,7 +62,7 @@ export interface ModelPreset {
 
 /** Static model presets per runner. `id: ''` is always "auto" — no model flag, the runner
  *  decides. Claude takes tier aliases + pinned versions, the only runner with no host-local
- *  catalog to ask. Codex and OpenCode list `auto` alone: their entries come from discovery
+ *  catalog to ask. Codex, OpenCode, and Pi list `auto` alone: their entries come from discovery
  *  (`runnerDiscoversModels`), because a hard-coded list is stale the moment the host's provider
  *  ships a model — which is exactly what #794 reported for OpenCode. */
 export const MODELS_BY_RUNNER: Record<Runner, readonly ModelPreset[]> = {
@@ -82,24 +82,22 @@ export const MODELS_BY_RUNNER: Record<Runner, readonly ModelPreset[]> = {
   opencode: [
     { id: '', label: 'auto', desc: 'Use your OpenCode default model' },
   ],
-  // pi selects a model with the same `provider/model` convention as opencode.
+  // pi selects a model with the same `provider/model` convention as opencode, and its
+  // entries come from discovery (`pi --list-models`) for the same reason OpenCode's do.
   pi: [
     { id: '', label: 'auto', desc: 'Use your pi default model' },
-    { id: 'anthropic/claude-opus-4-8', label: 'claude-opus-4.8', desc: 'via Anthropic' },
-    { id: 'anthropic/claude-sonnet-5', label: 'claude-sonnet-5', desc: 'via Anthropic' },
-    { id: 'openai/gpt-5.1', label: 'gpt-5.1', desc: 'via OpenAI' },
   ],
 }
 
 /** Runners that pick with the canonical `provider/model` convention and span every provider the
- *  host has configured, so an id they list is never EXCLUSIVE to them: pi offers
- *  `openai/gpt-5.1` as a preset and OpenCode serves the very same model from the very same
- *  provider. Their presets are therefore skipped when judging another runner's id.
+ *  host has configured, so an id they list is never EXCLUSIVE to them: both pi and OpenCode
+ *  can serve `openai/gpt-5.1` from the same provider. Their discovered ids are therefore
+ *  skipped when judging another runner's id.
  *
  *  This is the cockpit's half of the rule the server states structurally — a runner with no
  *  default provider cannot be contradicted, which is why `KNOWN_PRESETS_BY_RUNNER.pi` is empty
- *  in `packages/cezar/src/core/model-presets.ts`. Without it, adding pi's presets here would
- *  silently strip a pinned OpenCode model from the OpenCode picker. */
+ *  in `packages/cezar/src/core/model-presets.ts`. Without it, treating a discovered pi id as
+ *  "another runner's preset" would silently strip a pinned OpenCode model from the OpenCode picker. */
 const PROVIDER_SPANNING_RUNNERS: readonly Runner[] = ['opencode', 'pi']
 
 /** Keep recognized presets from another backend out of a runner's custom-model escape hatch
@@ -144,6 +142,7 @@ export function modelsForRunner(
 const DISCOVERY_RUNNER_LABEL: Record<ModelDiscoveryRunner, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
+  pi: 'Pi',
 }
 
 export function modelCatalogStatus(

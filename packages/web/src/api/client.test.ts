@@ -131,6 +131,7 @@ describe('request shapes', () => {
     },
     { name: 'getRunnerModels', call: () => getRunnerModels('codex'), path: '/api/v1/models?runner=codex', method: 'GET' },
     { name: 'getRunnerModels(opencode)', call: () => getRunnerModels('opencode'), path: '/api/v1/models?runner=opencode', method: 'GET' },
+    { name: 'getRunnerModels(pi)', call: () => getRunnerModels('pi'), path: '/api/v1/models?runner=pi', method: 'GET' },
     { name: 'getRuns', call: () => getRuns(), path: '/api/v1/runs', method: 'GET' },
     { name: 'getRun', call: () => getRun('run-1'), path: '/api/v1/runs/run-1', method: 'GET' },
     { name: 'getRunDiff', call: () => getRunDiff('run-1'), path: '/api/v1/runs/run-1/diff', method: 'GET' },

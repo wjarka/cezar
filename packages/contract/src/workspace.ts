@@ -465,11 +465,12 @@ export type ProviderConnectResponse = z.infer<typeof providerConnectResponseSche
 
 /**
  * The runners whose model list is discovered from the host rather than hard-coded: Codex
- * through its app-server protocol, OpenCode through its own `models` listing (#794). Claude has
- * no equivalent local source, so its picker keeps static presets and `GET /api/v1/models`
- * rejects it. One definition, used by the route's query validator and by the cockpit's picker.
+ * through its app-server protocol, OpenCode through its own `models` listing (#794), Pi
+ * through `pi --list-models`. Claude has no equivalent local source, so its picker keeps
+ * static presets and `GET /api/v1/models` rejects it. One definition, used by the route's
+ * query validator and by the cockpit's picker.
  */
-export const modelDiscoveryRunnerSchema = z.enum(['codex', 'opencode']);
+export const modelDiscoveryRunnerSchema = z.enum(['codex', 'opencode', 'pi']);
 export type ModelDiscoveryRunner = z.infer<typeof modelDiscoveryRunnerSchema>;
 export const MODEL_DISCOVERY_RUNNERS: readonly ModelDiscoveryRunner[] =
   modelDiscoveryRunnerSchema.options;
@@ -486,7 +487,7 @@ export const runnerModelOptionSchema = z.object({
 });
 export type RunnerModelOption = z.infer<typeof runnerModelOptionSchema>;
 
-/** `GET /api/v1/models?runner=codex|opencode` — the models discovered from that runner's own
+/** `GET /api/v1/models?runner=codex|opencode|pi` — the models discovered from that runner's own
  *  host installation, plus how fresh the answer is. Never an error: an unavailable CLI degrades
  *  to `source: 'unavailable'` with a `reason`. Claude has no host-local catalog and is rejected. */
 export const runnerModelCatalogResponseSchema = z.object({

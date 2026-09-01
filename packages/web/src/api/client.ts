@@ -395,7 +395,7 @@ export async function getHealth(opts?: ReadOptions): Promise<HealthResponse> {
   return unwrap(await cez.api.v1.health.$get({}, init(opts)), '/health')
 }
 
-/** Host-local catalog for one discovery runner (`codex`, `opencode` — #794). Workspace-level:
+/** Host-local catalog for one discovery runner (`codex`, `opencode`, `pi`). Workspace-level:
  *  one CLI/account serves every project. */
 export async function getRunnerModels(
   runner: ModelDiscoveryRunner,

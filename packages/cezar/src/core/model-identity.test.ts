@@ -182,7 +182,7 @@ describe('toBackendModel — wire form per backend', () => {
 });
 
 describe('round-trip: composer preset → resolve → render back to the wire string', () => {
-  // The exact preset ids the composer sends today (MODELS_BY_RUNNER), per backend.
+  // Representative ids each backend still accepts on the wire, per backend.
   const cases: Array<{ backend: AgentBackend; presets: string[] }> = [
     { backend: 'claude', presets: ['opus', 'sonnet', 'haiku', 'claude-opus-4-8', 'claude-sonnet-5'] },
     { backend: 'codex', presets: ['gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5-codex'] },

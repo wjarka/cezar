@@ -24,14 +24,18 @@ describe('workspace model catalog API', () => {
 
   type Discover = () => Promise<Array<{ id: string; label: string; description: string }>>;
 
-  const app = (discover: Discover, opencodeDiscover: Discover = discover) =>
+  const app = (discover: Discover, opencodeDiscover: Discover = discover, piDiscover?: Discover) =>
     createApp({
       repoRoot: root,
       store,
       manager: {} as RunManager,
       version: 'test',
       modelCatalog: new RunnerModelCatalog({
-        adapters: { codex: { discover }, opencode: { discover: opencodeDiscover } },
+        adapters: {
+          codex: { discover },
+          opencode: { discover: opencodeDiscover },
+          ...(piDiscover ? { pi: { discover: piDiscover } } : {}),
+        },
       }),
     });
 
@@ -87,10 +91,35 @@ describe('workspace model catalog API', () => {
     });
   });
 
+  it('answers the Pi catalog too — the runner that used to have hard-coded presets', async () => {
+    const server = app(
+      async () => [],
+      async () => [],
+      async () => [{ id: 'xai/grok-4.6', label: 'grok-4.6', description: 'via xai' }],
+    );
+    const response = await apiRequest(server, '/api/v1/models?runner=pi');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runner: 'pi',
+      models: [{ id: 'xai/grok-4.6', description: 'via xai' }],
+      source: 'live',
+    });
+  });
+
+  it('degrades a Pi discovery failure the same way', async () => {
+    const server = app(async () => [], async () => [], async () => { throw new Error('secret detail'); });
+    const response = await apiRequest(server, '/api/v1/models?runner=pi');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      runner: 'pi', models: [], source: 'unavailable', stale: false,
+      reason: 'Pi model discovery is temporarily unavailable',
+    });
+  });
+
   it.each(['/api/v1/models', '/api/v1/models?runner=claude'])('rejects invalid query %s', async (path) => {
     const response = await apiRequest(app(async () => []), path);
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: 'runner must be codex or opencode' });
+    expect(await response.json()).toEqual({ error: 'runner must be codex, opencode, or pi' });
   });
 
   it('is workspace-level rather than project-scoped', async () => {

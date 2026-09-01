@@ -624,9 +624,9 @@ steps:
 Parallel variants (×2/×3) of one task share that task's backend — mixing
 happens per task and per step, not inside a variant group.
 
-**Models come from your own machine.** For Codex and OpenCode, the model picker
+**Models come from your own machine.** For Codex, OpenCode, and Pi, the model picker
 is not a list cezar ships — it asks the installed CLI what it can actually run
-(`codex app-server`'s `model/list`, and `opencode models`), caches the answer in
+(`codex app-server`'s `model/list`, `opencode models`, and `pi --list-models`), caches the answer in
 memory for five minutes, and shows it. A model your provider rolled out
 yesterday is selectable without a cezar release, and one it retired stops being
 offered. Claude Code has no equivalent local catalog, so it keeps a short list
