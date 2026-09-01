@@ -744,6 +744,35 @@ describe('mapOpencodeEvent edge cases', () => {
     expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
   });
 
+  it('a task scope follows later tool snapshots, so completion carries the final title and input', () => {
+    let state = startedState();
+    // OpenCode publishes the tool part before its arguments finish parsing.
+    state = mapOpencodeEvent(part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'pending', input: {} } }), state).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in', prompt: 'dig' } } }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      state,
+    ).state;
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: {
+          kind: 'tool',
+          id: 'prt_task',
+          name: 'task',
+          toolKind: 'task',
+          title: 'Task: Dig in',
+          status: 'completed',
+          input: { description: 'Dig in', prompt: 'dig' },
+        },
+      },
+    ]);
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);

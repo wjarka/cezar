@@ -90,8 +90,10 @@ export interface OpencodeUiMapperState {
   readonly startedItems: ReadonlySet<string>;
   /** Text/reasoning/patch part ids whose `item.completed` was emitted. */
   readonly endedItems: ReadonlySet<string>;
-  /** Tool part id → last emitted status/title (flip + live-title detection). */
-  readonly tools: ReadonlyMap<string, { status: ToolStatus; title: string }>;
+  /** Tool part id → last emitted status/title (flip + live-title detection).
+   *  `live` says the title came off the wire rather than being derived from
+   *  the input, so only a live title is worth carrying over. */
+  readonly tools: ReadonlyMap<string, { status: ToolStatus; title: string; live: boolean }>;
   /** Serialized last plan — todowrite snapshots are idempotent, so identical
    *  replacements emit no duplicate `plan.updated`. */
   readonly lastPlanJson: string | null;
@@ -369,8 +371,13 @@ function mapTool(
   const display = toolDisplay(name, toolState.input);
   // The running/completed states carry a live human title ("npm test") — the
   // wire word wins over the derived one (§7.1). The error state has no title
-  // field (§4.2), so the last live title carries over instead of regressing.
-  const title = str(toolState.title) ?? prev?.title ?? display.title;
+  // field (§4.2), so the last LIVE title carries over instead of regressing.
+  // A derived title is re-derived: the pending snapshot's input is often `{}`
+  // (arguments still parsing), and "Task" must become "Task: Dig in" once
+  // the running snapshot brings the description.
+  const wireTitle = str(toolState.title);
+  const title = wireTitle ?? (prev?.live ? prev.title : display.title);
+  const live = wireTitle !== undefined || (prev?.live ?? false);
 
   const item: UiToolItem = { kind: 'tool', id, name, toolKind: display.toolKind, title, status };
   if (toolState.input !== undefined) item.input = toolState.input;
@@ -403,7 +410,7 @@ function mapTool(
   let next = state;
   if (events.length > 0) {
     const tools = new Map(state.tools);
-    tools.set(id, { status, title });
+    tools.set(id, { status, title, live });
     next = { ...next, tools };
   }
 
@@ -411,9 +418,14 @@ function mapTool(
   // `subtask` part does, so it queues as a pending scope for the next child
   // session heard from (#5). A nested one belongs to a scope already.
   if (parentItemId === undefined && isSubtaskTool(name)) {
+    const scope: SubtaskScope = { id, name, title, ...(item.input !== undefined ? { input: item.input } : {}) };
     if (prev === undefined && !settled) {
-      const scope: SubtaskScope = { id, name, title, ...(item.input !== undefined ? { input: item.input } : {}) };
       next = { ...next, unboundSubtasks: [...next.unboundSubtasks, scope] };
+    } else if (!settled && events.length > 0) {
+      // OpenCode publishes the part before its arguments finish parsing, so
+      // the first snapshot is often `{}`: the scope follows later snapshots
+      // or the child's idle would complete it with the stale first title.
+      next = refreshScope(scope, next);
     } else if (settled && events.length > 0) {
       // The tool's own settlement is authoritative (it carries the output), so
       // its scope is released: a later child idle must not re-complete it.
@@ -590,6 +602,24 @@ function mapStepFinish(
       ? new Set(state.currentTurnMessageIds).add(messageID)
       : state.currentTurnMessageIds;
   return emitUsage({ ...state, usageByMessage, currentTurnMessageIds });
+}
+
+/** Replace the scope owned by `scope.id`, bound or still pending, with the
+ *  latest snapshot of its title and input. */
+function refreshScope(scope: SubtaskScope, state: OpencodeUiMapperState): OpencodeUiMapperState {
+  let changed = false;
+  const unboundSubtasks = state.unboundSubtasks.map((s) => {
+    if (s.id !== scope.id) return s;
+    changed = true;
+    return scope;
+  });
+  const subtasks = new Map(state.subtasks);
+  for (const [sessionId, s] of state.subtasks) {
+    if (s.id !== scope.id) continue;
+    subtasks.set(sessionId, scope);
+    changed = true;
+  }
+  return changed ? { ...state, subtasks, unboundSubtasks } : state;
 }
 
 /** Drop the scope owned by item `id`, bound or still pending. */
