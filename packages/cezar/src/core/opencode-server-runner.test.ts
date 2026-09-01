@@ -154,10 +154,12 @@ describe('SIGTERM→SIGKILL escalation for an opencode server that survives SIGT
  * `POST /session/:id/prompt_async` and ends from the SSE `session.idle` —
  * the same signal the v2 mapper already uses.
  */
-describe('turn lifecycle over prompt_async + session.idle', () => {
+describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 }, () => {
   /** In-process stand-in for `opencode serve`: just the endpoints the runner
    *  touches, with the test driving the SSE bus frame by frame. */
-  async function startMockServer(opts: { promptStatus?: number; refuseSse?: boolean } = {}) {
+  async function startMockServer(
+    opts: { promptStatus?: number; refuseSse?: boolean; sseStatus?: number } = {},
+  ) {
     const clients: ServerResponse[] = [];
     const promptPosts: string[] = [];
     const server = createServer((req, res) => {
@@ -165,6 +167,11 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
       if (req.method === 'GET' && url.startsWith('/event')) {
         if (opts.refuseSse) {
           res.destroy();
+          return;
+        }
+        if (opts.sseStatus) {
+          res.writeHead(opts.sseStatus, { 'content-type': 'application/json' });
+          res.end('{}');
           return;
         }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -197,7 +204,7 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
       url: `http://127.0.0.1:${port}`,
       promptPosts,
       send(event: unknown): void {
-        for (const c of clients) c.write(`data: ${JSON.stringify(event)}\n\n`);
+        for (const c of clients) if (!c.destroyed) c.write(`data: ${JSON.stringify(event)}\n\n`);
       },
       dropSse(): void {
         for (const c of clients) c.destroy();
@@ -235,7 +242,9 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
     return child;
   }
 
-  async function waitFor(cond: () => boolean, ms = 3_000): Promise<void> {
+  // Generous: under a fully loaded suite run these tests share the machine
+  // with hundreds of files, and a tight bound here is a flake, not a check.
+  async function waitFor(cond: () => boolean, ms = 10_000): Promise<void> {
     const start = Date.now();
     while (!cond()) {
       if (Date.now() - start > ms) throw new Error('waitFor timed out');
@@ -253,7 +262,7 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
   }
 
   async function withSession(
-    opts: { promptStatus?: number; refuseSse?: boolean },
+    opts: { promptStatus?: number; refuseSse?: boolean; sseStatus?: number },
     run: (h: Harness) => Promise<void>,
   ): Promise<void> {
     const mock = await startMockServer(opts);
@@ -304,7 +313,7 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
   });
 
   it('surfaces a note and ends the turn exactly once when the prompt POST fails', async () => {
-    await withSession({ promptStatus: 500 }, async ({ events, mock }) => {
+    await withSession({ promptStatus: 500 }, async ({ events, mock, session }) => {
       await waitFor(() => count(events, 'turn-end') === 1);
       const notes = events.filter(
         (e) => e.type === 'note' && e.message.startsWith('opencode: prompt failed:'),
@@ -315,6 +324,12 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
       mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
       await sleep(60);
       expect(count(events, 'turn-end')).toBe(1);
+
+      // A first prompt that never posted is a failed session, not an empty
+      // successful one — run.ts records failure from v1 `error` only.
+      await waitFor(() => count(events, 'error') >= 1);
+      await session.result;
+      expect(session.open).toBe(false);
     });
   });
 
@@ -373,11 +388,22 @@ describe('turn lifecycle over prompt_async + session.idle', () => {
       // park the turn forever.
       mock.dropSse();
       await waitFor(() => count(events, 'turn-end') === 1);
-      const notes = events.filter(
-        (e) => e.type === 'note' && e.message.includes('event stream'),
+      // An error, not a note — a turn whose output was cut off must fail the
+      // step, and run.ts records failure from v1 `error` only.
+      const errors = events.filter(
+        (e) => e.type === 'error' && e.message.includes('event stream'),
       );
-      expect(notes).toHaveLength(1);
+      expect(errors).toHaveLength(1);
       await session.result;
+      expect(session.open).toBe(false);
+    });
+  });
+
+  it('fails the session loudly when the event stream answers with an error status', async () => {
+    await withSession({ sseStatus: 500 }, async ({ events, session }) => {
+      await waitFor(() => count(events, 'error') >= 1);
+      await session.result;
+      expect(count(events, 'turn-end')).toBe(0);
       expect(session.open).toBe(false);
     });
   });

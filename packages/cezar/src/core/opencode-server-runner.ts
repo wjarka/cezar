@@ -237,12 +237,10 @@ class OpencodeSession implements AgentSession {
     }
     const text = textOf(content);
     if (!text) return true;
-    void this.ready
-      .then(() => this.prompt(text))
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.emit({ type: 'note', message: `opencode: prompt failed: ${message}` });
-      });
+    // `prompt` already emitted the note and closed the turn before rethrowing,
+    // and a rejected `ready` already failed the session on the result path —
+    // there is nothing left to report here.
+    void this.ready.then(() => this.prompt(text)).catch(() => undefined);
     return true;
   }
 
@@ -366,6 +364,13 @@ class OpencodeSession implements AgentSession {
       const message = err instanceof Error ? err.message : String(err);
       this.emit({ type: 'note', message: `opencode: prompt failed: ${message}` });
       this.finishTurn();
+      // Rethrow so `bootstrap` still rejects when the FIRST prompt cannot be
+      // posted: the run's result path turns that into a v1 `error`, which is
+      // the only event run.ts records failure from — a swallowed rejection
+      // would let an empty result mark the step successful. `sendMessage`
+      // discards the rethrow (the note + turn-end above already told the
+      // session's user), so a mid-session failure stays non-fatal, as before.
+      throw err;
     }
   }
 
@@ -420,6 +425,13 @@ class OpencodeSession implements AgentSession {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`event stream failed to connect: ${message}`);
     }
+    // node:http hands over EVERY response, error statuses included — a proxy's
+    // 401 or a non-SSE 500 body is not an event bus, however well it parses.
+    const status = res.statusCode ?? 0;
+    if (status < 200 || status >= 300) {
+      res.resume(); // discard the body so the socket is released
+      throw new Error(`event stream failed to connect: HTTP ${status}`);
+    }
     void this.readEvents(res);
   }
 
@@ -443,13 +455,13 @@ class OpencodeSession implements AgentSession {
     } finally {
       // `session.idle` rides this stream and nothing else — a feed that dies
       // while the server is still up would otherwise park the current turn
-      // forever and leave every later prompt unanswerable. Close the turn,
-      // say so, and end the session; "Continue" resumes it on a fresh server.
+      // forever and leave every later prompt unanswerable. An `error`, not a
+      // note: the turn's remaining output is lost, so the step must record a
+      // failure (run.ts classifies from v1 `error` only), never pass as an
+      // empty success. Then close the turn (flushing what did arrive) and end
+      // the session; "Continue" resumes it on a fresh server.
       if (this.serverOpen && !this.sse.signal.aborted) {
-        this.emit({
-          type: 'note',
-          message: 'opencode: event stream closed unexpectedly — ending session',
-        });
+        this.emit({ type: 'error', message: 'opencode: event stream closed unexpectedly' });
         this.finishTurn();
         this.end();
       }
