@@ -5,9 +5,15 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
 
 concurrency:
-  group: automated-code-review-pr-${{ github.event.pull_request.number }}
+  group: automated-code-review-pr-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -42,18 +48,46 @@ jobs:
       pull-requests: read
     outputs:
       can_review: ${{ steps.review-round.outputs.can_review }}
+      pr_number: ${{ steps.review-round.outputs.pr_number }}
+      head_sha: ${{ steps.review-round.outputs.head_sha }}
+      base_sha: ${{ steps.review-round.outputs.base_sha }}
     steps:
       - id: review-round
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          AUTOMATED_REVIEW_ROUNDS: ${{ vars.AUTOMATED_REVIEW_ROUNDS }}
         run: |
-          review_count="$(gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --jq '.[] | select(.user.login == "github-actions[bot]") | select(.submitted_at != null) | .id' | wc -l)"
-          if [ "$review_count" -lt 3 ]; then
+          if [ -z "$PR_NUMBER" ]; then
+            echo 'A pull request number is required.' >&2
+            exit 1
+          fi
+          if [ -z "$AUTOMATED_REVIEW_ROUNDS" ]; then
+            AUTOMATED_REVIEW_ROUNDS=3
+          elif ! [[ "$AUTOMATED_REVIEW_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "AUTOMATED_REVIEW_ROUNDS must be a positive integer, got: $AUTOMATED_REVIEW_ROUNDS" >&2
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            head_sha="$(gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)"
+            base_sha="$(gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .base.sha)"
             echo 'can_review=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'can_review=false' >> "$GITHUB_OUTPUT"
+            head_sha="$EVENT_HEAD_SHA"
+            base_sha="$EVENT_BASE_SHA"
+            review_count="$(gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --jq '.[] | select(.user.login == "github-actions[bot]") | select(.submitted_at != null) | .id' | wc -l)"
+            if [ "$review_count" -lt "$AUTOMATED_REVIEW_ROUNDS" ]; then
+              echo 'can_review=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'can_review=false' >> "$GITHUB_OUTPUT"
+            fi
           fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
 
   claude-review:
     needs: [validate-provider, review-round]
@@ -69,20 +103,20 @@ jobs:
       - name: Checkout pull request merge result
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: refs/pull/${{ needs.review-round.outputs.pr_number }}/merge
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify Claude can read pull request data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ needs.review-round.outputs.pr_number }}
         run: gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid,state >/dev/null
 
       - name: Fetch prior automated review context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ needs.review-round.outputs.pr_number }}
         run: |
           rm -rf -- .review-context
           mkdir -- .review-context
@@ -102,7 +136,7 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: >-
-            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+            /code-review:code-review ${{ github.repository }}/pull/${{ needs.review-round.outputs.pr_number }}
 
             Override for this repository: in step 1, do NOT treat "the pull
             request is a draft" as a reason to stop. Draft is the normal
@@ -127,7 +161,7 @@ jobs:
             code did not change; re-file the finding when the defect is
             still real. Never resolve review threads. Set head_sha
             to the exact event head SHA
-            ${{ github.event.pull_request.head.sha }}, never the checked-out
+            ${{ needs.review-round.outputs.head_sha }}, never the checked-out
             merge SHA. Return only JSON matching the supplied schema. Set
             outcome to "reviewed" only after completing the review. Set outcome
             to "skipped" only for one of the remaining step-1 stop conditions,
@@ -172,13 +206,13 @@ jobs:
       - name: Checkout trusted wait script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.review-round.outputs.base_sha }}
           persist-credentials: false
 
       - name: Wait for ci.yml on this head SHA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ needs.review-round.outputs.head_sha }}
         run: |
           node .github/scripts/fetch-ci-results.cjs \
             --repo "$GITHUB_REPOSITORY" \
@@ -199,14 +233,14 @@ jobs:
       - name: Checkout trusted review instructions
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.review-round.outputs.base_sha }}
           path: trusted-review
           persist-credentials: false
 
       - name: Checkout pull request merge result
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: refs/pull/${{ needs.review-round.outputs.pr_number }}/merge
           path: pull-request
           fetch-depth: 0
           persist-credentials: false
@@ -214,7 +248,7 @@ jobs:
       - name: Fetch prior automated review context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ needs.review-round.outputs.pr_number }}
         run: |
           rm -rf -- pull-request/.review-context
           mkdir -- pull-request/.review-context
@@ -224,7 +258,7 @@ jobs:
       - name: Fetch CI workflow results
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ needs.review-round.outputs.head_sha }}
         run: |
           node trusted-review/.github/scripts/fetch-ci-results.cjs \
             --repo "$GITHUB_REPOSITORY" \
@@ -293,7 +327,7 @@ jobs:
         if: needs.review-round.outputs.can_review == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.review-round.outputs.base_sha }}
           persist-credentials: false
 
       - name: Download review output
@@ -309,6 +343,10 @@ jobs:
         env:
           REVIEW_OUTPUT: review-output/review-findings.json
           PROVIDER: ${{ needs.validate-provider.outputs.provider }}
+          PR_NUMBER: ${{ needs.review-round.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.review-round.outputs.head_sha }}
+          AUTOMATED_REVIEW_ROUNDS: ${{ vars.AUTOMATED_REVIEW_ROUNDS }}
+          IGNORE_CAP: ${{ github.event_name == 'workflow_dispatch' }}
         with:
           script: |
             const fs = require('node:fs');
@@ -319,7 +357,7 @@ jobs:
               postReview,
             } = require('./.github/scripts/automated-review.cjs');
             const { owner, repo } = context.repo;
-            const pullNumber = context.payload.pull_request.number;
+            const pullNumber = Number(process.env.PR_NUMBER);
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner,
               repo,
@@ -327,7 +365,9 @@ jobs:
               per_page: 100,
             });
             const review = loadReview(fs.readFileSync(process.env.REVIEW_OUTPUT, 'utf8'));
-            const eventHeadSha = context.payload.pull_request.head.sha;
+            const eventHeadSha = process.env.HEAD_SHA;
+            const roundsRaw = process.env.AUTOMATED_REVIEW_ROUNDS;
+            const maxRounds = roundsRaw ? Number(roundsRaw) : 3;
             const result = validateReview({
               review,
               headSha: eventHeadSha,
@@ -342,6 +382,8 @@ jobs:
               eventHeadSha,
               reviewedHeadSha: review.head_sha,
               ...result,
+              maxRounds,
+              ignoreCap: process.env.IGNORE_CAP === 'true',
             });
 
   review-complete:

@@ -37,7 +37,7 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.match(workflow, /^name: Automated Code Review$/m);
   assert.match(workflow, /pull_request_target:\n(?:[^\n]*\n)*?    types: \[opened, synchronize, reopened\]/);
   assert.match(workflow, /branches:\n      - main/);
-  assert.match(workflow, /concurrency:\n  group: automated-code-review-pr-\$\{\{ github\.event\.pull_request\.number \}\}\n  cancel-in-progress: true/);
+  assert.match(workflow, /concurrency:\n  group: automated-code-review-pr-\$\{\{ github\.event\.pull_request\.number \|\| inputs\.pr_number \}\}\n  cancel-in-progress: true/);
   assert.match(workflow, /AUTOMATED_REVIEWER: \$\{\{ vars\.AUTOMATED_REVIEWER \}\}/);
   assert.match(workflow, /openai\/codex-action@[0-9a-f]{40} {2}# v[0-9.]+\n/, 'codex-action must be pinned to a commit SHA, not a floating tag (openai/codex-action#150)');
   assert.match(workflow, /sandbox: read-only/);
@@ -47,15 +47,16 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.match(round, /permissions:\n      pull-requests: read/);
   assert.doesNotMatch(round, /pull-requests: write/);
   assert.match(round, /outputs:\n      can_review: \$\{\{ steps\.review-round\.outputs\.can_review \}\}/);
+  assert.match(round, /pr_number: \$\{\{ steps\.review-round\.outputs\.pr_number \}\}/);
+  assert.match(round, /head_sha: \$\{\{ steps\.review-round\.outputs\.head_sha \}\}/);
+  assert.match(round, /base_sha: \$\{\{ steps\.review-round\.outputs\.base_sha \}\}/);
   assert.match(round, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
   assert.match(round, /gh api --paginate "\/repos\/\$GITHUB_REPOSITORY\/pulls\/\$PR_NUMBER\/reviews" --jq '[^\n]*' \| wc -l/);
   assert.doesNotMatch(round, /--slurp[\s\S]*--jq/, 'gh api does not support combining --slurp with --jq');
   assert.match(round, /select\(\.user\.login == "github-actions\[bot\]"\)/);
   assert.match(round, /select\(\.submitted_at != null\)/, 'pending bot reviews must not exhaust the cap');
-  assert.match(round, /review_count" -lt 3/);
   assert.match(round, /can_review=true/);
   assert.match(round, /can_review=false/);
-  assert.doesNotMatch(round, /vars\./, 'the three-round cap must not be configurable');
 
   const claude = job(workflow, 'claude-review');
   assert.match(claude, /needs: \[validate-provider, review-round\]/);
@@ -70,7 +71,7 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.equal((workflow.match(/ANTHROPIC_API_KEY/g) || []).length, 1, 'only the Claude job may reference ANTHROPIC_API_KEY');
   assert.equal((workflow.match(/secrets\.GITHUB_TOKEN/g) || []).length, 7, 'only the read-only round guard, wait-for-ci, and provider context fetches use secrets.GITHUB_TOKEN');
   assert.match(claude, /anthropics\/claude-code-action@[0-9a-f]{40}/);
-  assert.match(claude, /ref: refs\/pull\/\$\{\{ github\.event\.pull_request\.number \}\}\/merge/);
+  assert.match(claude, /ref: refs\/pull\/\$\{\{ needs\.review-round\.outputs\.pr_number \}\}\/merge/);
   assert.match(claude, /fetch-depth: 0/);
   assert.match(claude, /persist-credentials: false/);
   assert.match(claude, /name: Verify Claude can read pull request data/);
@@ -113,9 +114,9 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.match(wait, /needs\.review-round\.outputs\.can_review == 'true'/);
   assert.match(wait, /timeout-minutes: 20/);
   assert.match(wait, /permissions:\n      actions: read/);
-  assert.match(wait, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(wait, /ref: \$\{\{ needs\.review-round\.outputs\.base_sha \}\}/);
   assert.match(wait, /persist-credentials: false/);
-  assert.match(wait, /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.match(wait, /HEAD_SHA: \$\{\{ needs\.review-round\.outputs\.head_sha \}\}/);
   assert.match(wait, /fetch-ci-results\.cjs/);
   assert.match(wait, /--wait/);
   assert.match(wait, /--head-sha "\$HEAD_SHA"/);
@@ -132,7 +133,7 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.doesNotMatch(codex, /allow-bots: true/);
   assert.match(codex, /allow-bot-users: 'claude\[bot\]'/);
   assert.match(codex, /allow-users: '\*'/);
-  assert.match(codex, /ref: refs\/pull\/\$\{\{ github\.event\.pull_request\.number \}\}\/merge/);
+  assert.match(codex, /ref: refs\/pull\/\$\{\{ needs\.review-round\.outputs\.pr_number \}\}\/merge/);
   assert.match(codex, /fetch-depth: 0/);
   assert.match(codex, /persist-credentials: false/);
   assert.match(codex, /path: pull-request/);
@@ -142,13 +143,13 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.match(codex, /rm -rf -- pull-request\/\.review-context\n\s+mkdir -- pull-request\/\.review-context/, 'Codex must replace an untrusted context symlink before writing');
   assert.doesNotMatch(codex, /mkdir -p pull-request\/\.review-context/, 'Codex must not follow a PR-controlled context symlink');
   assert.match(codex, /name: Fetch CI workflow results/);
-  assert.match(codex, /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.match(codex, /HEAD_SHA: \$\{\{ needs\.review-round\.outputs\.head_sha \}\}/);
   assert.match(codex, /node trusted-review\/\.github\/scripts\/fetch-ci-results\.cjs/);
   assert.match(codex, /--out pull-request\/\.review-context\/ci-results\.md/);
   assert.doesNotMatch(codex, /node pull-request\/\.github\/scripts\/fetch-ci-results/);
   assert.doesNotMatch(codex, /TMPDIR:/, 'codex-review must not add a writable TMPDIR');
   assert.match(codex, /name: Checkout trusted review instructions/);
-  assert.match(codex, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(codex, /ref: \$\{\{ needs\.review-round\.outputs\.base_sha \}\}/);
   assert.match(codex, /path: trusted-review/);
   assert.match(codex, /prompt-file: trusted-review\/\.github\/codex\/prompts\/review\.md/);
   assert.match(codex, /output-schema-file: trusted-review\/\.github\/schemas\/review-findings\.schema\.json/);
@@ -189,7 +190,7 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.match(poster, /permissions:\n      contents: read\n      pull-requests: write/);
   assert.equal((workflow.match(/pull-requests: write/g) || []).length, 1, 'post-review is the sole write-scoped job');
   assert.match(poster, /name: Checkout trusted validator/);
-  assert.match(poster, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(poster, /ref: \$\{\{ needs\.review-round\.outputs\.base_sha \}\}/);
   assert.doesNotMatch(poster, /refs\/pull\/\$\{\{ github\.event\.pull_request\.number \}\}\/merge/);
   assert.match(poster, /actions\/download-artifact@[0-9a-f]{40}[\s\S]*?name: review-output/);
   assert.match(poster, /actions\/github-script@[0-9a-f]{40}/);
@@ -197,7 +198,10 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.doesNotMatch(poster, /codex-review\.js/);
   assert.match(poster, /PROVIDER: \$\{\{ needs\.validate-provider\.outputs\.provider \}\}/);
   assert.match(poster, /github\.paginate\(github\.rest\.pulls\.listFiles/);
-  assert.match(poster, /const eventHeadSha = context\.payload\.pull_request\.head\.sha/);
+  assert.match(poster, /PR_NUMBER: \$\{\{ needs\.review-round\.outputs\.pr_number \}\}/);
+  assert.match(poster, /HEAD_SHA: \$\{\{ needs\.review-round\.outputs\.head_sha \}\}/);
+  assert.match(poster, /const pullNumber = Number\(process\.env\.PR_NUMBER\)/);
+  assert.match(poster, /const eventHeadSha = process\.env\.HEAD_SHA/);
   assert.match(poster, /noFindingsSummary: 'No issues found'/);
   assert.doesNotMatch(poster, /noFindingsSummary: process\.env\.PROVIDER/);
   assert.match(poster, /\n              eventHeadSha,/);
@@ -225,6 +229,42 @@ test('automated review workflow keeps its round cap, provider, permission, and c
   assert.ok(validator.indexOf('name: Reject untrusted bot actors') < validator.indexOf('id: provider'), 'bot guard must run before provider validation and the wildcard action allowlist');
   assert.match(aggregate, /permissions: \{\}/);
   assert.doesNotMatch(workflow, /resolveReviewThread/i, 'workflow must never resolve review threads automatically');
+});
+
+test('automated review rounds read AUTOMATED_REVIEW_ROUNDS and ignore the cap on workflow_dispatch', () => {
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
+  const round = job(workflow, 'review-round');
+  const claude = job(workflow, 'claude-review');
+  const wait = job(workflow, 'wait-for-ci');
+  const codex = job(workflow, 'codex-review');
+  const poster = job(workflow, 'post-review');
+
+  assert.match(workflow, /workflow_dispatch:\n    inputs:\n      pr_number:\n(?:.*\n)*?        required: true/);
+  assert.match(workflow, /github\.event\.pull_request\.number \|\| inputs\.pr_number/);
+  assert.match(round, /AUTOMATED_REVIEW_ROUNDS: \$\{\{ vars\.AUTOMATED_REVIEW_ROUNDS \}\}/);
+  assert.match(round, /\[ -z "\$AUTOMATED_REVIEW_ROUNDS" \]/);
+  assert.match(round, /AUTOMATED_REVIEW_ROUNDS=3/);
+  assert.match(round, /\^\[1-9\]\[0-9\]\*\$/);
+  assert.match(round, /AUTOMATED_REVIEW_ROUNDS must be a positive integer/);
+  assert.match(round, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+  assert.match(round, /EVENT_NAME" = workflow_dispatch/);
+  assert.match(round, /review_count" -lt "\$AUTOMATED_REVIEW_ROUNDS"/);
+  assert.doesNotMatch(round, /review_count" -lt 3/);
+  assert.match(fs.readFileSync(agentsPath, 'utf8'), /Automated review rounds \| `AUTOMATED_REVIEW_ROUNDS` \(default 3\)/);
+
+  assert.match(round, /PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \|\| inputs\.pr_number \}\}/);
+  assert.match(claude, /PR_NUMBER: \$\{\{ needs\.review-round\.outputs\.pr_number \}\}/);
+  assert.match(claude, /needs\.review-round\.outputs\.head_sha/);
+  assert.match(codex, /PR_NUMBER: \$\{\{ needs\.review-round\.outputs\.pr_number \}\}/);
+  assert.match(poster, /PR_NUMBER: \$\{\{ needs\.review-round\.outputs\.pr_number \}\}/);
+  assert.match(poster, /AUTOMATED_REVIEW_ROUNDS: \$\{\{ vars\.AUTOMATED_REVIEW_ROUNDS \}\}/);
+  assert.match(poster, /IGNORE_CAP: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}/);
+  assert.match(poster, /ignoreCap: process\.env\.IGNORE_CAP === 'true'/);
+  assert.match(poster, /maxRounds,/);
+  assert.doesNotMatch(claude, /github\.event\.pull_request\./);
+  assert.doesNotMatch(wait, /github\.event\.pull_request\./);
+  assert.doesNotMatch(codex, /github\.event\.pull_request\./);
+  assert.doesNotMatch(poster, /context\.payload\.pull_request/);
 });
 
 test('each review provider interpolates only its own model and effort variables', () => {

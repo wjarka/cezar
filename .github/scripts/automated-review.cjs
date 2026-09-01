@@ -81,12 +81,15 @@ function countAutomatedReviews(reviews, author = 'github-actions[bot]') {
   if (!Array.isArray(reviews)) return 0;
   return reviews.filter((review) => review?.user?.login === author && review?.submitted_at != null).length;
 }
-async function postReview({ github, owner, repo, pullNumber, eventHeadSha, reviewedHeadSha, comments, body }) {
+async function postReview({ github, owner, repo, pullNumber, eventHeadSha, reviewedHeadSha, comments, body, maxRounds = 3, ignoreCap = false }) {
   if (comments.length === 0 && !body) return;
+  if (!Number.isInteger(maxRounds) || maxRounds < 1) {
+    throw new Error('AUTOMATED_REVIEW_ROUNDS must be a positive integer.');
+  }
   const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: pullNumber });
   if (pull?.head?.sha !== eventHeadSha || pull.head.sha !== reviewedHeadSha) throw new Error('Refusing to post review: stale PR head SHA.');
   const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: pullNumber, per_page: 100 });
-  if (countAutomatedReviews(reviews) >= 3) return;
+  if (!ignoreCap && countAutomatedReviews(reviews) >= maxRounds) return;
   if (reviews.some((review) => review?.user?.login === 'github-actions[bot]' && review.commit_id === reviewedHeadSha)) return;
   await github.rest.pulls.createReview({ owner, repo, pull_number: pullNumber, commit_id: reviewedHeadSha, event: 'COMMENT', body: body || '', comments: comments.map(({ path, line, body: commentBody }) => ({ path, line, side: 'RIGHT', body: commentBody })) });
 }
