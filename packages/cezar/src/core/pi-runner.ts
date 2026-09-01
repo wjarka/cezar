@@ -91,6 +91,12 @@ export class PiRunner implements AgentRunner {
       }
       return key;
     };
+    /** flush() latches open keys as done — drop the index→key map too so a
+     *  later contentIndex reuse allocates a fresh id instead of the dead one. */
+    const flushText = (): void => {
+      textCoalescer.flush();
+      openTextBlockKeys.clear();
+    };
     const toolCalls: AgentToolCallRecord[] = [];
     let sessionId = spec.sessionId;
     let tokensUsed = 0;
@@ -184,7 +190,7 @@ export class PiRunner implements AgentRunner {
           }
           // Flush buffered v1 text before any non-streaming record so v2 UI
           // events (tool starts, turn-end, …) never overtake a pending block.
-          if (!isRecord(value) || value.type !== 'message_update') textCoalescer.flush();
+          if (!isRecord(value) || value.type !== 'message_update') flushText();
           emitUi(value);
           if (!isRecord(value)) continue;
 
@@ -207,7 +213,7 @@ export class PiRunner implements AgentRunner {
               if (typeof update.contentIndex === 'number') openTextBlockKeys.delete(update.contentIndex);
             }
           } else if (value.type === 'message_end' && isRecord(value.message) && value.message.role === 'assistant') {
-            textCoalescer.flush();
+            flushText();
             const usage = usageValues(value.message.usage);
             if (usage) {
               tokensUsed += usage.weighted;
@@ -215,7 +221,7 @@ export class PiRunner implements AgentRunner {
               if (usage.cost > 0) onEvent?.({ type: 'cost', usd: usage.cost });
             }
           } else if (value.type === 'tool_execution_start') {
-            textCoalescer.flush();
+            flushText();
             const id = string(value.toolCallId);
             const name = string(value.toolName);
             if (id && name) {
@@ -234,7 +240,7 @@ export class PiRunner implements AgentRunner {
               emitImages(isRecord(value.result) ? value.result.content : undefined, onEvent);
             }
           } else if (value.type === 'agent_settled') {
-            textCoalescer.flush();
+            flushText();
             settled = true;
             onEvent?.({ type: 'turn-end' });
             if (opts.autoEndAfterFirstTurn && open && !autoEndTimer) {
@@ -252,7 +258,7 @@ export class PiRunner implements AgentRunner {
         open = false;
       }
 
-      textCoalescer.flush();
+      flushText();
       const exitCode = await waitForExit(child);
       if (spawnError) throw spawnError;
       if (timedOut) {
