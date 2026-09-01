@@ -104,9 +104,11 @@ export interface OpencodeUiMapperState {
    *  Pending scopes bind to child sessions first-in-first-out: the oldest
    *  pending subtask takes the next child session heard from (#5). */
   readonly unboundSubtasks: readonly SubtaskScope[];
-  /** Child sessions whose scope is over (the child went idle, or its task tool
-   *  settled). A late event from one must never claim a pending sibling
-   *  through the FIFO queue. Cleared with the queue at the main turn's end. */
+  /** Child sessions whose scope is over (the child went idle, its task tool
+   *  settled, or the main turn ended around it). A late event from one must
+   *  never claim a pending scope through the FIFO queue — not in this turn and
+   *  not in a later one, so the set lives as long as the mapper state does
+   *  (one id per child session ever seen; small by construction). */
   readonly closedSessions: ReadonlySet<string>;
   readonly usageByMessage: ReadonlyMap<string, MessageUsage>;
   /** Last emitted session totals — usage.updated fires only on change. */
@@ -683,7 +685,9 @@ function mapIdle(props: Record<string, unknown>, state: OpencodeUiMapperState): 
       turnErrored: false,
       subtasks: new Map(),
       unboundSubtasks: [],
-      closedSessions: new Set(),
+      // Children the turn settled are over too: a delayed event from one must
+      // not bind to a scope the NEXT turn queues.
+      closedSessions: new Set([...state.closedSessions, ...state.subtasks.keys()]),
     },
   };
 }

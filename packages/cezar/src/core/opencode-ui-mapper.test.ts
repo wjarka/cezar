@@ -773,6 +773,40 @@ describe('mapOpencodeEvent edge cases', () => {
     ]);
   });
 
+  it('a child closed in one turn cannot bind to a task pending in the next turn', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(part({ id: 'prt_st_a', type: 'subtask', prompt: 'A', description: 'Task A' }), state).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    // The main turn ends while child A never went idle: the turn settles it.
+    state = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: SESSION_ID } }, state).state;
+    // Next turn, a fresh subtask is pending.
+    state = opencodeTurnStarted(state).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_b', sessionID: SESSION_ID, role: 'assistant' } } },
+      state,
+    ).state;
+    state = mapOpencodeEvent(part({ id: 'prt_st_b', messageID: 'msg_b', type: 'subtask', prompt: 'B', description: 'Task B' }), state).state;
+    // A delayed event from the old child must not nest under (or complete) the new subtask.
+    const stale = mapOpencodeEvent(
+      part({ id: 'prt_a_stale', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'stale' }),
+      state,
+    );
+    expect(stale.events).toEqual([]);
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, stale.state).events).toEqual([]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      stale.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);
