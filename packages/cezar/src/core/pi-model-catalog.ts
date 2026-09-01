@@ -35,6 +35,12 @@ export function resolvePiExecutable(bin?: string): string {
  * a model cap.
  */
 export async function discoverPiModels(options: PiModelDiscoveryOptions): Promise<ModelOption[]> {
+  // `PiRunner` swaps in the bundled mock under CEZ_DRY_RUN=1; that mock speaks RPC, not
+  // `--list-models`. Without an explicit binary, skip the spawn so a dry-run cockpit never
+  // shells out to a real `pi` (AGENTS.md: dry-run keeps working with no real CLI).
+  if (options.bin === undefined && process.env.CEZ_PI_BIN === undefined && process.env.CEZ_DRY_RUN === '1') {
+    return [];
+  }
   const bin = resolvePiExecutable(options.bin);
   const args = ['--list-models'] as const;
   const child = (options.spawn ?? spawnPi)(bin, args, options.cwd);

@@ -149,6 +149,23 @@ describe('discoverPiModels', () => {
     expect(spawned).toEqual({ bin: '/opt/pi', args: ['--list-models'], cwd: '/repo' });
   });
 
+  it('does not spawn the host CLI under CEZ_DRY_RUN=1', async () => {
+    const savedDry = process.env.CEZ_DRY_RUN;
+    const savedBin = process.env.CEZ_PI_BIN;
+    process.env.CEZ_DRY_RUN = '1';
+    delete process.env.CEZ_PI_BIN;
+    try {
+      const spawn = vi.fn();
+      await expect(discoverPiModels({ cwd: '/repo', spawn })).resolves.toEqual([]);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      if (savedDry === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = savedDry;
+      if (savedBin === undefined) delete process.env.CEZ_PI_BIN;
+      else process.env.CEZ_PI_BIN = savedBin;
+    }
+  });
+
   it('fails when the CLI exits non-zero', async () => {
     await expect(
       discover((fake) => {
