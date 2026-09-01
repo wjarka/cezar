@@ -807,6 +807,31 @@ describe('mapOpencodeEvent edge cases', () => {
     expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
   });
 
+  it('a task scope picks up an input-only snapshot that emits no item event', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in' } } }),
+      state,
+    ).state;
+    // Same status, same derived title, richer input: no UI event, but the scope must follow.
+    const quiet = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in', prompt: 'dig' } } }),
+      state,
+    );
+    expect(quiet.events).toEqual([]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      quiet.state,
+    ).state;
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: expect.objectContaining({ id: 'prt_task', status: 'completed', input: { description: 'Dig in', prompt: 'dig' } }),
+      },
+    ]);
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);

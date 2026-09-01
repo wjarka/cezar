@@ -423,10 +423,12 @@ function mapTool(
     const scope: SubtaskScope = { id, name, title, ...(item.input !== undefined ? { input: item.input } : {}) };
     if (prev === undefined && !settled) {
       next = { ...next, unboundSubtasks: [...next.unboundSubtasks, scope] };
-    } else if (!settled && events.length > 0) {
+    } else if (!settled) {
       // OpenCode publishes the part before its arguments finish parsing, so
-      // the first snapshot is often `{}`: the scope follows later snapshots
-      // or the child's idle would complete it with the stale first title.
+      // the first snapshot is often `{}` and later ones fill the input in —
+      // sometimes without moving the status or the derived title, i.e. with
+      // no item event. The scope follows every snapshot regardless, or the
+      // child's idle would complete it with stale metadata.
       next = refreshScope(scope, next);
     } else if (settled && events.length > 0) {
       // The tool's own settlement is authoritative (it carries the output), so
@@ -611,17 +613,21 @@ function mapStepFinish(
 function refreshScope(scope: SubtaskScope, state: OpencodeUiMapperState): OpencodeUiMapperState {
   let changed = false;
   const unboundSubtasks = state.unboundSubtasks.map((s) => {
-    if (s.id !== scope.id) return s;
+    if (s.id !== scope.id || sameScope(s, scope)) return s;
     changed = true;
     return scope;
   });
   const subtasks = new Map(state.subtasks);
   for (const [sessionId, s] of state.subtasks) {
-    if (s.id !== scope.id) continue;
+    if (s.id !== scope.id || sameScope(s, scope)) continue;
     subtasks.set(sessionId, scope);
     changed = true;
   }
   return changed ? { ...state, subtasks, unboundSubtasks } : state;
+}
+
+function sameScope(a: SubtaskScope, b: SubtaskScope): boolean {
+  return a.name === b.name && a.title === b.title && JSON.stringify(a.input) === JSON.stringify(b.input);
 }
 
 /** Drop the scope owned by item `id`, bound or still pending. */
