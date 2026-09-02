@@ -257,9 +257,12 @@ chips; the user's pick (or a free-form reply) rides the normal reply seam
 message lands (no `ask.resolved` event). Codex additionally bridges its native
 `item/tool/requestUserInput` server request onto the same event and routes the
 next answer back as the documented JSON-RPC response. Malformed or unsupported
-native requests receive an error response rather than hanging the turn. A
-malformed marker degrades to plain text — the prose fallback is never made
-worse. A native `AskUserQuestion`
+Codex native requests receive an error response rather than hanging the turn.
+OpenCode likewise bridges its native `question` tool: the runner discovers the
+main session's pending request through `GET /question`, emits `ask.requested`,
+and routes the next answer to `POST /question/:id/reply`; malformed question
+input emits no ask card. A malformed marker degrades to plain text — the prose
+fallback is never made worse. A native `AskUserQuestion`
 control-protocol bridge for claude (the `control_request can_use_tool` path) is a
 possible future enhancement; the marker is the portable baseline.
 
@@ -285,6 +288,7 @@ transport into `UiEvent`s. The authoritative table is
 | tool item | `tool_use`→running, `tool_result`→completed/failed, `permission_denials`→`declined` | `commandExecution`→execute (+`exitCode`, `outputDelta`), `fileChange`→edit (`diffs`), `mcpToolCall`→other, `webSearch`→fetch, collaboration spawn→task | tool parts (state `pending/running/completed/error→failed`, `patch` parts→`diffs`) |
 | `item.delta` `output` (live terminal) | *(none — card fills on completion; per-capability degradation)* | `item/commandExecution/outputDelta` | running-state metadata |
 | `plan.updated` | `TodoWrite` input | `todoList` / `plan` items | `todowrite` tool |
+| `ask.requested` | portable `CEZ:ASK` marker | portable marker + native `item/tool/requestUserInput` | portable marker + native `question` tool (`GET /question`, `POST /question/:id/reply`) |
 | subagent nesting (`parentItemId`) | `parent_tool_use_id` | collaboration receiver thread id (review mode remains childless) | child-session parts under a `subtask` |
 | `usage.updated` | `result.usage` + `total_cost_usd` | `thread/tokenUsage/updated` (no USD) | `message.updated` tokens/cost + `step-finish` |
 

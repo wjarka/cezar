@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from './agent-runner.ts';
 import { KILL_GRACE_MS, OpencodeServerRunner } from './opencode-server-runner.ts';
+import type { UiEvent } from './ui-events.ts';
 
 const spawnHook = vi.hoisted(() => ({ override: null as null | (() => unknown) }));
 
@@ -162,6 +163,9 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
   ) {
     const clients: ServerResponse[] = [];
     const promptPosts: string[] = [];
+    const questionGets: number[] = [];
+    const questionReplies: Array<{ path: string; body: unknown }> = [];
+    const pendingQuestions: unknown[] = [];
     const server = createServer((req, res) => {
       const url = req.url ?? '';
       if (req.method === 'GET' && url.startsWith('/event')) {
@@ -181,7 +185,16 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
         clients.push(res);
         return;
       }
-      req.on('data', () => undefined);
+      if (req.method === 'GET' && url === '/question') {
+        questionGets.push(Date.now());
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(pendingQuestions));
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
       req.on('end', () => {
         if (req.method === 'POST' && url === '/session') {
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -194,6 +207,12 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
           res.end('{}');
           return;
         }
+        if (req.method === 'POST' && /^\/question\/[^/]+\/reply$/.test(url)) {
+          questionReplies.push({ path: url, body: JSON.parse(body || '{}') });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{}');
+          return;
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{}');
       });
@@ -203,6 +222,9 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     return {
       url: `http://127.0.0.1:${port}`,
       promptPosts,
+      questionGets,
+      questionReplies,
+      pendingQuestions,
       send(event: unknown): void {
         for (const c of clients) if (!c.destroyed) c.write(`data: ${JSON.stringify(event)}\n\n`);
       },
@@ -257,6 +279,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
 
   interface Harness {
     events: AgentEvent[];
+    uiEvents: UiEvent[];
     mock: Awaited<ReturnType<typeof startMockServer>>;
     session: ReturnType<OpencodeServerRunner['startSession']>;
   }
@@ -268,18 +291,35 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     const mock = await startMockServer(opts);
     spawnHook.override = () => servedChild(mock.url);
     const events: AgentEvent[] = [];
+    const uiEvents: UiEvent[] = [];
     const session = new OpencodeServerRunner({ bin: 'opencode', timeoutMs: 30_000 }).startSession(
       { userPrompt: 'go', cwd: process.cwd() },
       (e) => events.push(e),
+      { onUiEvent: (e) => uiEvents.push(e) },
     );
     try {
-      await run({ events, mock, session });
+      await run({ events, uiEvents, mock, session });
     } finally {
       spawnHook.override = null;
       session.end();
       await session.result.catch(() => undefined);
       await mock.close();
     }
+  }
+
+  function sendQuestion(mock: Harness['mock'], input: unknown, id = 'tool_question'): void {
+    mock.send({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id,
+          sessionID: 'ses_test',
+          type: 'tool',
+          tool: 'question',
+          state: { status: 'running', input },
+        },
+      },
+    });
   }
 
   it('posts the prompt to prompt_async and ends the turn on session.idle, not on the POST response', async () => {
@@ -426,6 +466,195 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     });
   });
 
+  it('maps a native question to ask.requested and sends selected answers to its reply endpoint', async () => {
+    await withSession({}, async ({ uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_test', sessionID: 'ses_test' });
+
+      const input = {
+        questions: [
+          {
+            header: 'Architecture decisions',
+            question: 'Which test framework?',
+            options: [
+              { label: 'Vitest', description: 'Use the existing suite' },
+              { label: 'Node test', description: 'Use node:test' },
+            ],
+            multiple: true,
+          },
+        ],
+      };
+      sendQuestion(mock, input);
+      sendQuestion(mock, input);
+
+      await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([
+        {
+          type: 'ask.requested',
+          requestId: 'q_test',
+          questions: [
+            {
+              header: 'Architecture',
+              question: 'Which test framework?',
+              options: [
+                { label: 'Vitest', description: 'Use the existing suite' },
+                { label: 'Node test', description: 'Use node:test' },
+              ],
+              multiSelect: true,
+            },
+          ],
+        },
+      ]);
+
+      session.sendMessage([{ type: 'text', text: 'Architecture: Vitest, Node test' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      expect(mock.questionReplies).toEqual([
+        {
+          path: '/question/q_test/reply',
+          body: { answers: [['Vitest', 'Node test']] },
+        },
+      ]);
+      expect(mock.promptPosts).toHaveLength(1);
+    });
+  });
+
+  it('caps native question fields, omits malformed questions, and uses plain text for the first answer', async () => {
+    await withSession({}, async ({ uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_caps', sessionID: 'ses_test' });
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: `  ${'H'.repeat(20)}  `,
+            question: `  ${'Q'.repeat(420)}  `,
+            options: [
+              { label: `  ${'A'.repeat(70)}  `, description: 'D'.repeat(300) },
+              { label: 'Beta', description: 'Second' },
+              { label: 'Gamma', description: 'Third' },
+              { label: 'Delta', description: 'Fourth' },
+              { label: 'Ignored', description: 'Fifth' },
+            ],
+          },
+          {
+            header: 'Deploy',
+            question: 'Which environment?',
+            options: [{ label: 'Staging' }, { label: 'Production' }],
+          },
+          {
+            header: 'Invalid',
+            question: 'Not enough choices?',
+            options: [{ label: 'Only one' }, { label: '   ' }, null],
+          },
+          null,
+          {
+            header: 'Too late',
+            question: 'Should not be iterated?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      });
+
+      await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
+      const ask = uiEvents.find((event) => event.type === 'ask.requested');
+      expect(ask).toEqual({
+        type: 'ask.requested',
+        requestId: 'q_caps',
+        questions: [
+          {
+            header: 'HHHHHHHHHHHH',
+            question: 'Q'.repeat(400),
+            options: [
+              { label: 'A'.repeat(60), description: 'D'.repeat(280) },
+              { label: 'Beta', description: 'Second' },
+              { label: 'Gamma', description: 'Third' },
+              { label: 'Delta', description: 'Fourth' },
+            ],
+          },
+          {
+            header: 'Deploy',
+            question: 'Which environment?',
+            options: [{ label: 'Staging' }, { label: 'Production' }],
+          },
+        ],
+      });
+
+      session.sendMessage([{ type: 'text', text: '  Use sensible defaults  ' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      expect(mock.questionReplies[0]).toEqual({
+        path: '/question/q_caps/reply',
+        body: { answers: [['Use sensible defaults'], []] },
+      });
+      expect(mock.promptPosts).toHaveLength(1);
+    });
+  });
+
+  it('does not post a prompt when all pending-question ID lookups fail', async () => {
+    await withSession({}, async ({ events, uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+
+      await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
+      expect(mock.questionGets).toHaveLength(8);
+      expect(uiEvents.find((event) => event.type === 'ask.requested')).toEqual({
+        type: 'ask.requested',
+        requestId: expect.stringMatching(/^opencode-/),
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+
+      session.sendMessage([{ type: 'text', text: 'One' }]);
+      await waitFor(() => mock.questionGets.length === 9);
+      await waitFor(() =>
+        events.some(
+          (event) =>
+            event.type === 'note' &&
+            event.message === 'opencode: question reply failed: no pending question id',
+        ),
+      );
+      expect(mock.questionReplies).toEqual([]);
+      expect(mock.promptPosts).toHaveLength(1);
+    });
+  });
+
+  it('discards a question capture that completes after its turn ended', async () => {
+    await withSession({}, async ({ events, uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Stale',
+            question: 'Should this survive?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      });
+      await waitFor(() => mock.questionGets.length === 1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => count(events, 'turn-end') === 1);
+      mock.pendingQuestions.push({ id: 'q_too_late', sessionID: 'ses_test' });
+      await sleep(250);
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([]);
+
+      session.sendMessage([{ type: 'text', text: 'a later prompt' }]);
+      await waitFor(() => mock.promptPosts.length === 2);
+      expect(mock.questionReplies).toEqual([]);
+    });
+  });
+
   it('ends the turn and the session when the event stream drops mid-turn', async () => {
     await withSession({}, async ({ events, mock, session }) => {
       await waitFor(() => mock.promptPosts.length === 1);
@@ -463,4 +692,3 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     });
   });
 });
-

@@ -11,6 +11,7 @@ import type {
 import type { AgentSession, SessionOptions } from './agent-runner.ts';
 import { prependSystemPrompt, trackChildExit } from './agent-runner.ts';
 import { buildChildEnv } from './agent-env.ts';
+import { parseAskRequest, type AskQuestion } from './ask.ts';
 import { AUTO_END_DELAY_MS, DEFAULT_RUN_TIMEOUT_MS } from './claude-cli-runner.ts';
 import { parseModelIdentity } from './model-identity.ts';
 import { V1TextCoalescer } from './v1-text-coalescer.ts';
@@ -115,6 +116,8 @@ class OpencodeSession implements AgentSession {
   private turnActive = false;
   /** `finishTurn` ran for the current turn — repeats and stray idles no-op. */
   private turnEnded = false;
+  /** Monotonic identity used to reject async work completed by an older turn. */
+  private turnSerial = 0;
   /** Settles when the open turn finishes; re-armed at each turn start. The
    *  gate `prompt` waits on so turns never overlap (see there). */
   private turnFinished: Promise<void> = Promise.resolve();
@@ -124,6 +127,8 @@ class OpencodeSession implements AgentSession {
    *  lands in R2 step 2.1). Both streams take their turn-end from the wire
    *  `session.idle` (v1 since #4 — see `finishTurn`). */
   private uiState: OpencodeUiMapperState = createOpencodeUiState();
+  private pendingQuestion: { requestId?: string; questions: AskQuestion[] } | undefined;
+  private questionCapture: Promise<void> | undefined;
   private autoEndTimer: NodeJS.Timeout | undefined;
   private spawnFailed: Error | null = null;
   private timedOut = false;
@@ -241,6 +246,12 @@ class OpencodeSession implements AgentSession {
     }
     const text = textOf(content);
     if (!text) return true;
+    if (this.pendingQuestion) {
+      const pending = this.pendingQuestion;
+      this.pendingQuestion = undefined;
+      void this.replyQuestion(pending, text);
+      return true;
+    }
     // `prompt` already emitted the note and closed the turn before rethrowing,
     // and a rejected `ready` already failed the session on the result path —
     // there is nothing left to report here.
@@ -355,6 +366,7 @@ class OpencodeSession implements AgentSession {
     if (!this.sessionId || !this.serverOpen) return;
     this.turnActive = true;
     this.turnEnded = false;
+    this.turnSerial += 1;
     this.turnFinished = new Promise((resolve) => {
       this.turnFinishedResolve = resolve;
     });
@@ -395,6 +407,8 @@ class OpencodeSession implements AgentSession {
     if (!this.turnActive || this.turnEnded) return;
     this.turnEnded = true;
     this.turnActive = false;
+    this.pendingQuestion = undefined;
+    this.questionCapture = undefined;
     this.turnFinishedResolve();
     // A part that never saw `time.end` (abort, server quirk) still surfaces
     // its prose before the turn boundary (run.ts reads markers there).
@@ -559,6 +573,18 @@ class OpencodeSession implements AgentSession {
       const state = (part.state as Record<string, unknown> | undefined) ?? {};
       const status = stringField(state, 'status');
       const name = stringField(part, 'tool') ?? stringField(part, 'name') ?? 'tool';
+      if (
+        name === 'question' &&
+        this.turnActive &&
+        this.pendingQuestion === undefined &&
+        this.questionCapture === undefined
+      ) {
+        const capture = this.captureQuestion(state.input ?? state);
+        this.questionCapture = capture;
+        void capture.finally(() => {
+          if (this.questionCapture === capture) this.questionCapture = undefined;
+        });
+      }
       const callId = id || `${name}-${this.toolsSeen.size}`;
       if (!this.toolsSeen.has(callId)) {
         this.toolsSeen.add(callId);
@@ -594,6 +620,56 @@ class OpencodeSession implements AgentSession {
     if (cost > this.lastCost) {
       this.emit({ type: 'cost', usd: cost - this.lastCost });
       this.lastCost = cost;
+    }
+  }
+
+  private async captureQuestion(input: unknown): Promise<void> {
+    const questions = toCezarQuestions(input);
+    if (!questions) return;
+    const turnSerial = this.turnSerial;
+    let requestId: string | undefined;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (!this.turnActive || this.turnSerial !== turnSerial) return;
+      requestId = await this.pendingQuestionId().catch(() => undefined);
+      if (requestId) break;
+      if (attempt < 7) await sleep(150);
+    }
+    if (!this.turnActive || this.turnSerial !== turnSerial) return;
+    this.pendingQuestion = { requestId, questions };
+    this.opts.onUiEvent?.({
+      type: 'ask.requested',
+      requestId: requestId ?? `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      questions,
+    });
+  }
+
+  private async pendingQuestionId(): Promise<string | undefined> {
+    const value: unknown = await this.http('GET', '/question', undefined);
+    if (!Array.isArray(value)) return undefined;
+    for (const entry of value) {
+      if (!isRecord(entry) || stringField(entry, 'sessionID') !== this.sessionId) continue;
+      const id = stringField(entry, 'id');
+      if (id) return id;
+    }
+    return undefined;
+  }
+
+  private async replyQuestion(
+    pending: { requestId?: string; questions: AskQuestion[] },
+    text: string,
+  ): Promise<void> {
+    try {
+      const requestId = pending.requestId ?? (await this.pendingQuestionId());
+      if (!requestId) {
+        this.emit({ type: 'note', message: 'opencode: question reply failed: no pending question id' });
+        return;
+      }
+      await this.http('POST', `/question/${encodeURIComponent(requestId)}/reply`, {
+        answers: questionAnswers(pending.questions, text),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit({ type: 'note', message: `opencode: question reply failed: ${message}` });
     }
   }
 
@@ -657,6 +733,66 @@ function textOf(content: ContentBlock[]): string {
     .map((b) => b.text)
     .join('\n')
     .trim();
+}
+
+function toCezarQuestions(value: unknown): AskQuestion[] | null {
+  if (!isRecord(value) || !Array.isArray(value.questions)) return null;
+  const questions: AskQuestion[] = [];
+  for (const rawQuestion of value.questions.slice(0, 4)) {
+    if (!isRecord(rawQuestion)) continue;
+    const header = clippedString(rawQuestion.header, 12);
+    const question = clippedString(rawQuestion.question, 400);
+    if (!header || !question || !Array.isArray(rawQuestion.options)) continue;
+    const options: AskQuestion['options'] = [];
+    for (const rawOption of rawQuestion.options) {
+      if (options.length === 4) break;
+      if (!isRecord(rawOption)) continue;
+      const label = clippedString(rawOption.label, 60);
+      if (!label) continue;
+      const description = clippedString(rawOption.description, 280);
+      options.push({ label, ...(description ? { description } : {}) });
+    }
+    if (options.length < 2) continue;
+    questions.push({
+      header,
+      question,
+      options,
+      ...(rawQuestion.multiple === true ? { multiSelect: true } : {}),
+    });
+  }
+  return parseAskRequest({ questions })?.questions ?? null;
+}
+
+function questionAnswers(questions: AskQuestion[], text: string): string[][] {
+  const answers = questions.map(() => [] as string[]);
+  let matched = false;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    const index = questions.findIndex((question) => trimmed.startsWith(`${question.header}:`));
+    if (index < 0) continue;
+    matched = true;
+    answers[index] = trimmed
+      .slice(questions[index]!.header.length + 1)
+      .split(',')
+      .map((answer) => answer.trim())
+      .filter(Boolean);
+  }
+  if (!matched && answers[0]) answers[0] = [text.trim()];
+  return answers;
+}
+
+function clippedString(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
