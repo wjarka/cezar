@@ -176,9 +176,12 @@ On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
 On **GitHub** (this repository):
 
 4. Settings → Secrets and variables → Actions → new repository secret
-   **`NPM_TOKEN`** with the token from step 2. A clone that inherited an
-   upstream token must **replace** the value, not add a second secret — the old
-   token cannot write `@wjarka/*` and the release would fail with `E404`.
+   **`NPM_TOKEN`** with the token from step 2. This repository has no `NPM_TOKEN`
+   today, so this is a create, not a rotation — every release and snapshot run so
+   far has reported `NPM_TOKEN is not configured — forcing --dry-run` and stayed
+   green. If a fork ever does inherit an upstream token, **replace** that value
+   rather than adding a second secret: the old token cannot write `@wjarka/*`, and
+   the release would fail with a misleading `E404`.
 5. Nothing else — the workflows declare their own `permissions:` blocks, so
    repo-level Actions defaults can stay read-only.
 
