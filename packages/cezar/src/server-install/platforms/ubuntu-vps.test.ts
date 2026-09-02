@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  isForeignNpxExecStart,
   isNpxExecStart,
   nginxVhost,
   refreshNpxCacheForRedeploy,
@@ -284,6 +285,29 @@ describe('isNpxExecStart (#696)', () => {
   it('is false for a global bin unit (no npx)', () => {
     expect(isNpxExecStart('/usr/bin/node /usr/bin/cezarion serve --no-open --port 4321')).toBe(false);
   });
+
+  // #23: this clone publishes as `cezarion`, so a unit installed by UPSTREAM cezar as
+  // `npx --yes cezar-cli` stops matching. It must not be adopted (clearing upstream's npx
+  // cache would move the box onto upstream's latest), but it must not pass silently either —
+  // `server-deploy` would report a green restart having changed nothing.
+  it('does not mistake an upstream `npx cezar-cli` unit for one of ours', () => {
+    const upstream = '/n/npx --yes cezar-cli serve --no-open --port 4321';
+    expect(isNpxExecStart(upstream)).toBe(false);
+    expect(isForeignNpxExecStart(upstream)).toBe(true);
+  });
+
+  it('does not call our own npx unit foreign', () => {
+    expect(isForeignNpxExecStart('/n/npx --yes cezarion serve --no-open --port 4321')).toBe(false);
+  });
+
+  it('does not call a checkout or global-bin unit foreign', () => {
+    expect(isForeignNpxExecStart('/usr/bin/node /home/cezar/cezar/dist/index.js serve --port 4321')).toBe(false);
+    expect(isForeignNpxExecStart('/usr/bin/node /usr/bin/cezarion serve --port 4321')).toBe(false);
+    // An `_npx` path is a checkout-style launch, not an npx invocation: `\bnpx\b` cannot
+    // match after a word character, and `_` is one.
+    expect(isForeignNpxExecStart('/usr/bin/node /home/u/.npm/_npx/ab/node_modules/cezarion/dist/index.js')).toBe(false);
+    expect(isForeignNpxExecStart('')).toBe(false);
+  });
 });
 
 describe('ubuntu-vps redeploy npx-cache refresh (#696)', () => {
@@ -302,6 +326,28 @@ describe('ubuntu-vps redeploy npx-cache refresh (#696)', () => {
     const { ctx, infos } = recordingCtx('/n/npx --yes cezarion serve --no-open --port 4321');
     await ubuntuVps.redeploy!(ctx);
     expect(infos.some((message) => /clear cached cezarion|npx refetch/i.test(message))).toBe(true);
+  });
+
+  it('warns instead of silently skipping an upstream `npx cezar-cli` unit (#23)', () => {
+    const warnings: string[] = [];
+    const ui = { ...createAutoUi(), warn: (message: string) => warnings.push(message) } as Ui;
+    const cache = mkdtempSync(join(tmpdir(), 'cez-npx-'));
+    const prev = process.env.npm_config_cache;
+    process.env.npm_config_cache = cache;
+    try {
+      // Upstream's cached build sits right there; the point is that we leave it alone.
+      mkdirSync(join(cache, '_npx', 'aaaa', 'node_modules', 'cezar-cli'), { recursive: true });
+
+      refreshNpxCacheForRedeploy(ctxWith({ ui }), '/n/npx --yes cezar-cli serve --port 4321');
+
+      expect(existsSync(join(cache, '_npx', 'aaaa'))).toBe(true);
+      expect(warnings.join('\n')).toMatch(/other than cezarion/);
+      expect(warnings.join('\n')).toMatch(/--reconfigure autostart/);
+    } finally {
+      if (prev === undefined) delete process.env.npm_config_cache;
+      else process.env.npm_config_cache = prev;
+      rmSync(cache, { recursive: true, force: true });
+    }
   });
 
   it('does NOT touch the npx cache for a checkout-based unit', async () => {

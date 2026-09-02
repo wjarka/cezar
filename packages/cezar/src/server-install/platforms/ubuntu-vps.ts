@@ -670,6 +670,24 @@ export function isNpxExecStart(execStart: string): boolean {
   return /\bnpx\b/.test(execStart) && execStart.includes(OFFICIAL_CLI_PKG);
 }
 
+/** True when the unit is an npx launch of a package that is NOT ours — in practice a unit
+ *  installed by upstream cezar as `npx --yes cezar-cli`, before this clone took its own npm
+ *  identity (#23).
+ *
+ *  Deliberately not treated as ours to refresh: clearing another package's npx cache would make
+ *  the next restart fetch THAT package's `latest`, silently moving the box onto upstream's newest
+ *  release — the shadowing the rename exists to prevent. But saying nothing is worse, because
+ *  `server-deploy` then reports a green restart while the running version is unchanged. So the
+ *  caller warns and names the remedy.
+ *
+ *  A checkout unit (`<node> …/dist/index.js`) is not foreign, including one running out of an
+ *  `_npx` directory: `\bnpx\b` needs a non-word character before `npx`, and `_` is a word
+ *  character, so `_npx` never matches. A global-bin unit names no `npx` at all and is likewise
+ *  excluded — its restart picks up whatever the global bin now points at. */
+export function isForeignNpxExecStart(execStart: string): boolean {
+  return /\bnpx\b/.test(execStart) && !execStart.includes(OFFICIAL_CLI_PKG);
+}
+
 /**
  * The npx trap (#696): `npx --yes cezarion` caches the resolved package under
  * `~/.npm/_npx/<hash>` and reuses it forever — a service restart re-execs the
@@ -681,7 +699,18 @@ export function isNpxExecStart(execStart: string): boolean {
  * directly).
  */
 export function refreshNpxCacheForRedeploy(ctx: InstallContext, execStart: string): void {
-  if (!isNpxExecStart(execStart)) return;
+  if (!isNpxExecStart(execStart)) {
+    if (isForeignNpxExecStart(execStart)) {
+      ctx.ui.warn(
+        `This service is launched by npx from a package other than ${OFFICIAL_CLI_PKG} — most likely a unit ` +
+          `installed by upstream cezar as \`npx --yes cezar-cli\`. Restarting it re-execs that package's cached ` +
+          `build, so this deploy will NOT change the running version, and clearing that cache would move the box ` +
+          `onto upstream's latest instead. Rewrite the unit for ${OFFICIAL_CLI_PKG} first:\n` +
+          `  cez server-install --platform ubuntu-vps --reconfigure autostart`,
+      );
+    }
+    return;
+  }
   const dir = npxCacheDir();
   if (ctx.dryRun) {
     ctx.ui.info(`DRY RUN — would clear cached ${OFFICIAL_CLI_PKG} builds under ${dir} so npx refetches the latest.`);
