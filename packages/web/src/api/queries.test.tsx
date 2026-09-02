@@ -14,6 +14,8 @@ import {
   useProjectRepoBase,
   queryKeys,
   useProviderStatus,
+  useConnectAgentAccount,
+  useRecheckAgentAccount,
   useRefreshProviderStatus,
   useRetryProviderAuth,
   useHealth,
@@ -411,6 +413,115 @@ describe('provider status workspace query', () => {
     act(() => result.current.mutate({ provider: 'claude', authFailureId: 'incident-1' }))
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(client.getQueryData(workspaceQueryKeys.providerStatus)).toEqual(prior)
+  })
+})
+
+describe('host model catalog invalidation after auth changes', () => {
+  const unavailable = {
+    runner: 'codex' as const,
+    models: [],
+    source: 'unavailable' as const,
+    stale: false,
+  }
+
+  it('Check again invalidates every runner catalog', async () => {
+    fetchMock.mockResolvedValue(json({
+      providers: [
+        { provider: 'claude', status: 'connected', enabled: true },
+        { provider: 'codex', status: 'connected', enabled: true },
+        { provider: 'opencode', status: 'connected', enabled: true },
+        { provider: 'pi', status: 'connected', enabled: true },
+      ],
+    }))
+    const client = createQueryClient()
+    client.setQueryData(workspaceQueryKeys.models('codex'), unavailable)
+    client.setQueryData(workspaceQueryKeys.models('pi'), { ...unavailable, runner: 'pi' })
+    const { result } = renderHook(() => useRefreshProviderStatus(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    })
+
+    act(() => result.current.mutate())
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.isInvalidated).toBe(true)
+    expect(client.getQueryState(workspaceQueryKeys.models('pi'))?.isInvalidated).toBe(true)
+  })
+
+  it('retry invalidates that runner catalog', async () => {
+    fetchMock.mockResolvedValue(json({
+      providers: [{ provider: 'codex', status: 'connected', enabled: true }],
+    }))
+    const client = createQueryClient()
+    client.setQueryData(workspaceQueryKeys.models('codex'), unavailable)
+    client.setQueryData(workspaceQueryKeys.models('pi'), { ...unavailable, runner: 'pi' })
+    const { result } = renderHook(() => useRetryProviderAuth(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    })
+
+    act(() => result.current.mutate({ provider: 'codex', authFailureId: 'incident-1' }))
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.isInvalidated).toBe(true)
+    expect(client.getQueryState(workspaceQueryKeys.models('pi'))?.isInvalidated).toBe(false)
+  })
+
+  it('Connect invalidates that runner catalog', async () => {
+    fetchMock.mockResolvedValue(json({ opened: true, command: 'codex login' }))
+    const client = createQueryClient()
+    client.setQueryData(workspaceQueryKeys.models('codex'), unavailable)
+    const { result } = renderHook(() => useConnectAgentAccount(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    })
+
+    act(() => result.current.mutate({ provider: 'codex' }))
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.isInvalidated).toBe(true)
+  })
+
+  it('Connect marks the catalog stale without refetching a mounted query', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/providers/connect')) return json({ opened: true, command: 'codex login' })
+      if (url.includes('/models')) return json({ runner: 'codex', models: [], source: 'unavailable', stale: false })
+      if (url.includes('/workspace/agent-profiles')) return json({ profiles: [], profileCapableProviders: [] })
+      if (url.includes('/providers/status')) return json({ providers: [] })
+      return json({})
+    })
+    const client = createQueryClient()
+    const hookWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+    renderHook(() => useRunnerModels('codex'), { wrapper: hookWrapper })
+    await waitFor(() => expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.status).toBe('success'))
+    const modelsCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes('/models')).length
+    const before = modelsCalls()
+    const { result } = renderHook(() => useConnectAgentAccount(), { wrapper: hookWrapper })
+
+    act(() => result.current.mutate({ provider: 'codex' }))
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(modelsCalls()).toBe(before)
+    expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.isInvalidated).toBe(true)
+  })
+
+  it('account Check again invalidates that runner catalog', async () => {
+    fetchMock.mockResolvedValue(json({
+      status: { provider: 'codex', status: 'connected', enabled: true },
+    }))
+    const client = createQueryClient()
+    client.setQueryData(workspaceQueryKeys.models('codex'), unavailable)
+    const { result } = renderHook(() => useRecheckAgentAccount(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    })
+
+    act(() => result.current.mutate('default:codex'))
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.isInvalidated).toBe(true)
   })
 })
 

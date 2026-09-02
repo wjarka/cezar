@@ -104,4 +104,76 @@ describe('RunnerModelCatalog', () => {
     expect(codex).toHaveBeenCalledOnce();
     expect(claude).toHaveBeenCalledOnce();
   });
+
+  it('drops a cached miss so the next get rediscovers', async () => {
+    const discover = vi.fn()
+      .mockRejectedValueOnce(new Error('not logged in'))
+      .mockResolvedValueOnce(models);
+    const catalog = new RunnerModelCatalog({ adapters: { codex: { discover } } });
+
+    await expect(catalog.get('codex')).resolves.toMatchObject({ source: 'unavailable', models: [] });
+    catalog.invalidate('codex');
+    await expect(catalog.get('codex')).resolves.toEqual({
+      runner: 'codex', models, source: 'live', stale: false,
+    });
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not spawn discovery itself', async () => {
+    const discover = vi.fn().mockRejectedValue(new Error('not logged in'));
+    const catalog = new RunnerModelCatalog({ adapters: { codex: { discover } } });
+    await catalog.get('codex');
+    expect(discover).toHaveBeenCalledOnce();
+    catalog.invalidate('codex');
+    expect(discover).toHaveBeenCalledOnce();
+  });
+
+  it('does not drop another runner\'s cache', async () => {
+    const codex = vi.fn(async () => models);
+    const pi = vi.fn(async () => [{ id: 'grok', label: 'grok', description: '' }]);
+    const catalog = new RunnerModelCatalog({ adapters: { codex: { discover: codex }, pi: { discover: pi } } });
+    await catalog.get('codex');
+    await catalog.get('pi');
+    catalog.invalidate('codex');
+    await catalog.get('pi');
+    expect(pi).toHaveBeenCalledOnce();
+  });
+
+  it('discards an in-flight miss that finishes after invalidate', async () => {
+    let rejectFirst!: (error: Error) => void;
+    const discover = vi.fn()
+      .mockImplementationOnce(() => new Promise<ModelOption[]>((_, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce(models);
+    const catalog = new RunnerModelCatalog({ adapters: { codex: { discover } } });
+
+    const first = catalog.get('codex');
+    catalog.invalidate('codex');
+    await expect(catalog.get('codex')).resolves.toEqual({
+      runner: 'codex', models, source: 'live', stale: false,
+    });
+    rejectFirst(new Error('not logged in'));
+    await expect(first).resolves.toMatchObject({ source: 'unavailable', models: [] });
+    await expect(catalog.get('codex')).resolves.toEqual({
+      runner: 'codex', models, source: 'cache', stale: false,
+    });
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps last-known-good models when rediscovery after invalidate fails', async () => {
+    const discover = vi.fn()
+      .mockResolvedValueOnce(models)
+      .mockRejectedValueOnce(new Error('timeout'));
+    const catalog = new RunnerModelCatalog({ adapters: { codex: { discover } } });
+
+    await catalog.get('codex');
+    catalog.invalidate('codex');
+    await expect(catalog.get('codex')).resolves.toEqual({
+      runner: 'codex',
+      models,
+      source: 'cache',
+      stale: true,
+      reason: 'Codex model discovery is temporarily unavailable',
+    });
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
 });

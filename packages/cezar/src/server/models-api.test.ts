@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ProviderAuthService } from '../core/provider-auth.ts';
 import { RunnerModelCatalog } from '../core/runner-model-catalog.ts';
 import { RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -125,5 +126,248 @@ describe('workspace model catalog API', () => {
   it('is workspace-level rather than project-scoped', async () => {
     const response = await apiRequest(app(async () => []), '/api/v1/p/default/models?runner=codex');
     expect(response.status).toBe(404);
+  });
+
+  it('Connect busts a cached miss without spawning discovery', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        codex: {
+          discover: async () => {
+            calls += 1;
+            if (calls === 1) throw new Error('not logged in');
+            return [{ id: 'gpt-future', label: 'GPT Future', description: '' }];
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({ stdout: 'Logged in using ChatGPT', stderr: '', exitCode: 0 }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+      models: [],
+    });
+    const connect = await apiRequest(server, '/api/v1/providers/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'codex' }),
+    });
+    expect(connect.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'live',
+      models: [{ id: 'gpt-future' }],
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('retry busts a cached miss without spawning discovery', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        codex: {
+          discover: async () => {
+            calls += 1;
+            if (calls === 1) throw new Error('not logged in');
+            return [{ id: 'gpt-future', label: 'GPT Future', description: '' }];
+          },
+        },
+      },
+    });
+    const providerAuth = new ProviderAuthService({
+      createAuthFailureId: () => 'auth-incident-1',
+      runCommand: async () => ({ stdout: 'Logged in using ChatGPT', stderr: '', exitCode: 0 }),
+    });
+    const incident = providerAuth.reportRuntimeAuthFailure('codex')?.status.authFailureId;
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth,
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    const retry = await apiRequest(server, '/api/v1/providers/codex/retry', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authFailureId: incident }),
+    });
+    expect(retry.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'live',
+      models: [{ id: 'gpt-future' }],
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('Check again busts a cached miss without spawning discovery', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        pi: {
+          discover: async () => {
+            calls += 1;
+            if (calls === 1) throw new Error('not logged in');
+            return [{ id: 'xai/grok-4.6', label: 'grok-4.6', description: '' }];
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({
+          stdout: 'provider  model  context  max-out  thinking  images\nanthropic  claude  200K  64K  yes  yes',
+          stderr: '',
+          exitCode: 0,
+        }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=pi')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    const refresh = await apiRequest(server, '/api/v1/providers/status?refresh=1');
+    expect(refresh.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=pi')).json()).toMatchObject({
+      source: 'live',
+      models: [{ id: 'xai/grok-4.6' }],
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('account Check again busts that runner without spawning discovery', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        opencode: {
+          discover: async () => {
+            calls += 1;
+            if (calls === 1) throw new Error('not logged in');
+            return [{ id: 'openai/gpt-5.4', label: 'openai/gpt-5.4', description: '' }];
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({
+          stdout: [
+            '┌  Credentials ~/.local/share/opencode/auth.json',
+            '●  Anthropic oauth',
+            '└  1 credential',
+          ].join('\n'),
+          stderr: '',
+          exitCode: 0,
+        }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=opencode')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    const recheck = await apiRequest(server, '/api/v1/workspace/agent-profiles/default:opencode/status?refresh=1');
+    expect(recheck.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=opencode')).json()).toMatchObject({
+      source: 'live',
+      models: [{ id: 'openai/gpt-5.4' }],
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('a status read without refresh leaves the catalog cache in place', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        codex: {
+          discover: async () => {
+            calls += 1;
+            throw new Error('not logged in');
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({ stdout: 'Logged in using ChatGPT', stderr: '', exitCode: 0 }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    expect((await apiRequest(server, '/api/v1/providers/status')).status).toBe(200);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('a failed Connect leaves the catalog cache in place', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        codex: {
+          discover: async () => {
+            calls += 1;
+            throw new Error('not logged in');
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({ stdout: '', stderr: 'secret error', exitCode: null, errorCode: 'ENOENT' }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    const connect = await apiRequest(server, '/api/v1/providers/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'codex' }),
+    });
+    expect(connect.status).toBe(409);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    expect(calls).toBe(1);
   });
 });

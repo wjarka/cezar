@@ -41,11 +41,19 @@ export class RunnerModelCatalog {
   readonly #ttlMs: number;
   readonly #cache = new Map<RunnerId, CachedCatalog>();
   readonly #inFlight = new Map<RunnerId, Promise<RunnerModelCatalogResult>>();
+  readonly #generation = new Map<RunnerId, number>();
 
   constructor(options: RunnerModelCatalogOptions) {
     this.#adapters = options.adapters;
     this.#now = options.now ?? Date.now;
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  }
+
+  invalidate(runner: RunnerId): void {
+    const cached = this.#cache.get(runner);
+    if (cached) cached.expiresAt = 0;
+    this.#inFlight.delete(runner);
+    this.#generation.set(runner, (this.#generation.get(runner) ?? 0) + 1);
   }
 
   get(runner: RunnerId): Promise<RunnerModelCatalogResult> {
@@ -66,8 +74,9 @@ export class RunnerModelCatalog {
     const pending = this.#inFlight.get(runner);
     if (pending) return pending;
 
-    const refresh = this.#refresh(runner, cached).finally(() => {
-      this.#inFlight.delete(runner);
+    const generation = this.#generation.get(runner) ?? 0;
+    const refresh = this.#refresh(runner, cached, generation).finally(() => {
+      if ((this.#generation.get(runner) ?? 0) === generation) this.#inFlight.delete(runner);
     });
     this.#inFlight.set(runner, refresh);
     return refresh;
@@ -76,21 +85,27 @@ export class RunnerModelCatalog {
   async #refresh(
     runner: RunnerId,
     cached: CachedCatalog | undefined,
+    generation: number,
   ): Promise<RunnerModelCatalogResult> {
+    const current = () => (this.#generation.get(runner) ?? 0) === generation;
     try {
       const adapter = this.#adapters[runner];
       if (!adapter) throw new Error('adapter unavailable');
       const models = await adapter.discover();
       const value = { models: [...models], expiresAt: this.#now() + this.#ttlMs };
-      this.#cache.set(runner, value);
+      if (current()) this.#cache.set(runner, value);
       return { runner, models: value.models, source: 'live', stale: false };
     } catch {
       const reason = unavailableReason(runner);
       if (cached) {
-        this.#cache.set(runner, { models: cached.models, expiresAt: this.#now() + this.#ttlMs, failureReason: reason });
+        if (current()) {
+          this.#cache.set(runner, { models: cached.models, expiresAt: this.#now() + this.#ttlMs, failureReason: reason });
+        }
         return { runner, models: cached.models, source: 'cache', stale: true, reason };
       }
-      this.#cache.set(runner, { models: [], expiresAt: this.#now() + this.#ttlMs, failureReason: reason });
+      if (current()) {
+        this.#cache.set(runner, { models: [], expiresAt: this.#now() + this.#ttlMs, failureReason: reason });
+      }
       return { runner, models: [], source: 'unavailable', stale: false, reason };
     }
   }

@@ -36,8 +36,10 @@ import {
 // A contract VALUE, like `workspaceUiStateSchema` in workspace/migrations.ts — the request
 // schema this route validates with is the same one the client compiles against.
 import {
+  MODEL_DISCOVERY_RUNNERS,
   modelDiscoveryRunnerSchema,
   openProjectInSchema,
+  runnerDiscoversModels,
   updateProjectInputSchema,
 } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
@@ -1053,6 +1055,9 @@ export function createApp(deps: ServerDeps) {
       pi: { discover: () => discoverPiModels({ cwd: bootRoot }) },
     },
   });
+  const invalidateHostModels = (provider: ProviderId): void => {
+    if (runnerDiscoversModels(provider)) modelCatalog.invalidate(provider);
+  };
   const providerAuth = deps.providerAuth ?? new ProviderAuthService();
   const workspaceConfig = deps.workspaceConfig ?? {
     load: loadWorkspaceConfig,
@@ -1717,7 +1722,11 @@ export function createApp(deps: ServerDeps) {
       queryZodValidator(z.object({ refresh: queryValue.refine((v) => v === undefined || v === '1') }), { message: 'refresh must be 1 when provided' }),
       async (c) => {
         const query = { data: c.req.valid('query') };
-        return c.json(await providerStatus({ refresh: query.data.refresh === '1' }));
+        const refresh = query.data.refresh === '1';
+        if (refresh) {
+          for (const runner of MODEL_DISCOVERY_RUNNERS) modelCatalog.invalidate(runner);
+        }
+        return c.json(await providerStatus({ refresh }));
       },
     )
 
@@ -1759,6 +1768,7 @@ export function createApp(deps: ServerDeps) {
         if (!providerAuth.clearRuntimeAuthFailure(provider.data, body.data.authFailureId)) {
           return c.json({ error: 'Authentication incident changed. Refresh and try again.' }, 409);
         }
+        invalidateHostModels(provider.data);
         const result = await providerStatus({ refresh: true });
         const row = result.providers.find(({ provider: id }) => id === provider.data);
         if (row) workspaceEvents.emit('provider-status', row);
@@ -1812,6 +1822,7 @@ export function createApp(deps: ServerDeps) {
       }
 
       if (row.status === 'connected') {
+        invalidateHostModels(provider);
         return c.json({ opened: false, connected: true, command });
       }
       if (row.status === 'not-installed') {
@@ -1835,6 +1846,7 @@ export function createApp(deps: ServerDeps) {
       if (!opened) {
         return c.json({ error: 'No terminal emulator could be opened. Run this command manually.', command }, 409);
       }
+      invalidateHostModels(provider);
       return c.json({ opened: true, command });
     });
 
@@ -2118,6 +2130,7 @@ export function createApp(deps: ServerDeps) {
         const account = await accountById(c.req.param('id'));
         if (!account) return c.json({ error: `unknown account: ${c.req.param('id')}` }, 404);
         const refresh = c.req.valid('query').refresh === '1';
+        if (refresh) invalidateHostModels(account.provider);
         // The discovered account's row is the one `GET /api/v1/providers/status` owns, so it comes
         // from there — enablement included, which a bare probe does not know about.
         if (account.isDefault) {
