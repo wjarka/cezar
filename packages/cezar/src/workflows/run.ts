@@ -55,7 +55,13 @@ import { DEFAULT_AGENT_ACCOUNT_ID } from '../workspace/agent-accounts.ts';
 import { WorkspaceSemaphore, type AccountHolds } from '../workspace/semaphore.ts';
 import { UiEventSink } from '../runs/ui-event-sink.ts';
 import type { UiEvent } from '../core/ui-events.ts';
-import { chainStepNote, DEFAULT_ALLOWED_TOOLS, stepKind, type WorkflowDef, type WorkflowStepDef } from './types.ts';
+import {
+  allowedToolsForStep,
+  chainStepNote,
+  stepKind,
+  type WorkflowDef,
+  type WorkflowStepDef,
+} from './types.ts';
 
 const CHECK_OUTPUT_CAP = 20_000;
 
@@ -2434,7 +2440,7 @@ export class RunManager {
           : openingPrompt,
         ...(openingImages.length ? { images: openingImages } : {}),
         cwd: state.cwd,
-        allowedTools: toolsStep?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
+        allowedTools: allowedToolsForStep(toolsStep, continueBackend),
         bashAllowlist: toolsStep?.bashAllowlist,
         additionalDirectories: agentDirectories(join(this.dataDir, 'runs'), continueProfile.env),
         env: continueProfile.env,
@@ -3019,7 +3025,7 @@ export class RunManager {
           userPrompt,
           images,
           cwd: state.cwd,
-          allowedTools: step.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
+          allowedTools: allowedToolsForStep(step, stepBackend),
           bashAllowlist: step.bashAllowlist,
           // The handoff file lives outside the worktree — grant access.
           additionalDirectories: agentDirectories(join(this.dataDir, 'runs'), stepProfile.env),

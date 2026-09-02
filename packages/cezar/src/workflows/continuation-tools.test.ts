@@ -109,15 +109,17 @@ describe('a resumed session keeps its workflow step tools', () => {
   /** A terminal run whose `workflowDef` and steps are exactly what the caller says. */
   function terminalRun(input: {
     def?: WorkflowDef;
-    steps: { id: string; sessionId?: string; backend?: 'claude' | 'codex' }[];
+    steps: { id: string; sessionId?: string; backend?: 'claude' | 'codex' | 'pi' }[];
     status?: 'done' | 'failed';
     error?: string;
     autoResumeAt?: string;
   }): string {
+    const runner = [...input.steps].reverse().find((s) => s.backend)?.backend;
     const record = store.createRun({
       title: 't',
       workflow: input.def?.name ?? 'legacy',
       task: 'do the thing',
+      ...(runner ? { runner } : {}),
       steps: input.steps.map((s) => ({ id: s.id, name: s.id, kind: 'agent' as const })),
     });
     store.updateRun(record.id, {
@@ -178,6 +180,24 @@ describe('a resumed session keeps its workflow step tools', () => {
     expect(manager!.continueRun(id, { text: 'keep going' })).toEqual({ ok: true });
     const spec = await specAt(0);
     expect(spec.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(spec.bashAllowlist).toBeUndefined();
+    await settled(id);
+  });
+
+  it('a default Pi continuation unions Subagent onto DEFAULT_ALLOWED_TOOLS', async () => {
+    const def: WorkflowDef = {
+      name: 'pi-task',
+      source: 'file',
+      steps: [{ id: 'work', name: 'Work', prompt: '{{task}}' }],
+    };
+    const id = terminalRun({
+      def,
+      steps: [{ id: 'work', sessionId: 'sess-1', backend: 'pi' }],
+    });
+
+    expect(manager!.continueRun(id, { text: 'keep going' })).toEqual({ ok: true });
+    const spec = await specAt(0);
+    expect(spec.allowedTools).toEqual([...DEFAULT_ALLOWED_TOOLS, 'Subagent']);
     expect(spec.bashAllowlist).toBeUndefined();
     await settled(id);
   });

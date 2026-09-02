@@ -324,6 +324,7 @@ function piTools(tools: string[], bashAllowlist?: string[]): string[] {
     Write: 'write',
     Grep: 'grep',
     Glob: 'find',
+    Subagent: 'subagent',
   };
   return [
     ...new Set(

@@ -342,6 +342,26 @@ describe('pi RPC argv', () => {
       }),
     ).toEqual(['--mode', 'rpc', '--tools', 'read']);
   });
+
+  it('maps Subagent onto pi --tools so the default extras list is representable', () => {
+    expect(
+      buildPiArgs({
+        cwd: '/repo',
+        userPrompt: 'task',
+        allowedTools: ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash', 'Subagent'],
+      }),
+    ).toEqual(['--mode', 'rpc', '--tools', 'read,edit,write,grep,find,bash,subagent']);
+  });
+
+  it('does not inject Subagent when allowedTools is an explicit subset', () => {
+    expect(
+      buildPiArgs({
+        cwd: '/repo',
+        userPrompt: 'task',
+        allowedTools: ['Read', 'Bash'],
+      }),
+    ).toEqual(['--mode', 'rpc', '--tools', 'read,bash']);
+  });
 });
 
 describe('pi spawns under pi credentials, not another runner', () => {
