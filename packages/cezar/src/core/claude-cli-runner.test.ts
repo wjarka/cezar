@@ -67,6 +67,65 @@ describe('buildClaudeArgs approval gate', () => {
   });
 });
 
+describe('buildClaudeArgs permission mode', () => {
+  const spec = { userPrompt: 'do it', cwd: '/tmp' };
+
+  it('selects bypass with --dangerously-skip-permissions and no --permission-mode', () => {
+    const args = buildClaudeArgs(spec, { CEZ_CLAUDE_PERMISSION_MODE: 'bypass' });
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(args).not.toContain('--permission-mode');
+  });
+
+  it('honours an explicit mode over CEZ_APPROVAL_GATE', () => {
+    const args = buildClaudeArgs(spec, {
+      CEZ_CLAUDE_PERMISSION_MODE: 'dontAsk',
+      CEZ_APPROVAL_GATE: '1',
+    });
+    const idx = args.indexOf('--permission-mode');
+    expect(args[idx + 1]).toBe('dontAsk');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('passes --setting-sources when CEZ_CLAUDE_SETTING_SOURCES is set', () => {
+    const args = buildClaudeArgs(spec, {
+      CEZ_CLAUDE_PERMISSION_MODE: 'bypass',
+      CEZ_CLAUDE_SETTING_SOURCES: 'user,project,local',
+    });
+    expect(args).toContain('--dangerously-skip-permissions');
+    const idx = args.indexOf('--setting-sources');
+    expect(args[idx + 1]).toBe('user,project,local');
+  });
+
+  it('omits --setting-sources when the env var is unset or empty', () => {
+    expect(buildClaudeArgs(spec, {})).not.toContain('--setting-sources');
+    expect(buildClaudeArgs(spec, { CEZ_CLAUDE_SETTING_SOURCES: '' })).not.toContain(
+      '--setting-sources',
+    );
+  });
+
+  it('falls back to dontAsk when CEZ_CLAUDE_PERMISSION_MODE is unknown', () => {
+    const args = buildClaudeArgs(spec, { CEZ_CLAUDE_PERMISSION_MODE: 'manual' });
+    const idx = args.indexOf('--permission-mode');
+    expect(args[idx + 1]).toBe('dontAsk');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('keeps CEZ_APPROVAL_GATE when CEZ_CLAUDE_PERMISSION_MODE is unknown', () => {
+    const args = buildClaudeArgs(spec, {
+      CEZ_CLAUDE_PERMISSION_MODE: 'manual',
+      CEZ_APPROVAL_GATE: '1',
+    });
+    const idx = args.indexOf('--permission-mode');
+    expect(args[idx + 1]).toBe('acceptEdits');
+  });
+
+  it('selects acceptEdits without CEZ_APPROVAL_GATE', () => {
+    const args = buildClaudeArgs(spec, { CEZ_CLAUDE_PERMISSION_MODE: 'acceptEdits' });
+    const idx = args.indexOf('--permission-mode');
+    expect(args[idx + 1]).toBe('acceptEdits');
+  });
+});
+
 /**
  * #703 — a session cezar tore down itself must not settle as an agent
  * failure. Every agent CLI installs its own stop-signal handler and exits
