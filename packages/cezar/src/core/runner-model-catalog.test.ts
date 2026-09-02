@@ -158,4 +158,22 @@ describe('RunnerModelCatalog', () => {
     });
     expect(discover).toHaveBeenCalledTimes(2);
   });
+
+  it('keeps last-known-good models when rediscovery after invalidate fails', async () => {
+    const discover = vi.fn()
+      .mockResolvedValueOnce(models)
+      .mockRejectedValueOnce(new Error('timeout'));
+    const catalog = new RunnerModelCatalog({ adapters: { codex: { discover } } });
+
+    await catalog.get('codex');
+    catalog.invalidate('codex');
+    await expect(catalog.get('codex')).resolves.toEqual({
+      runner: 'codex',
+      models,
+      source: 'cache',
+      stale: true,
+      reason: 'Codex model discovery is temporarily unavailable',
+    });
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
 });

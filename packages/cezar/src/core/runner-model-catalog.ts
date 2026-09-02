@@ -50,7 +50,8 @@ export class RunnerModelCatalog {
   }
 
   invalidate(runner: RunnerId): void {
-    this.#cache.delete(runner);
+    const cached = this.#cache.get(runner);
+    if (cached) cached.expiresAt = 0;
     this.#inFlight.delete(runner);
     this.#generation.set(runner, (this.#generation.get(runner) ?? 0) + 1);
   }

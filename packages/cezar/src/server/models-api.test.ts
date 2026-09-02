@@ -332,4 +332,42 @@ describe('workspace model catalog API', () => {
     });
     expect(calls).toBe(1);
   });
+
+  it('a failed Connect leaves the catalog cache in place', async () => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        codex: {
+          discover: async () => {
+            calls += 1;
+            throw new Error('not logged in');
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({ stdout: '', stderr: 'secret error', exitCode: null, errorCode: 'ENOENT' }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    const connect = await apiRequest(server, '/api/v1/providers/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'codex' }),
+    });
+    expect(connect.status).toBe(409);
+    expect(await (await apiRequest(server, '/api/v1/models?runner=codex')).json()).toMatchObject({
+      source: 'unavailable',
+    });
+    expect(calls).toBe(1);
+  });
 });

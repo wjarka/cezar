@@ -1780,7 +1780,6 @@ export function createApp(deps: ServerDeps) {
       const body = { data: c.req.valid('json') };
 
       const provider = body.data.provider as ProviderId;
-      invalidateHostModels(provider);
       // A NAMED account is refused in hosted mode before anything is resolved, exactly like every
       // sibling route in the agent-profiles family. Checking later would already have read
       // `~/.cezar/agent-accounts.json`, built a command carrying the account's absolute path (which
@@ -1823,6 +1822,7 @@ export function createApp(deps: ServerDeps) {
       }
 
       if (row.status === 'connected') {
+        invalidateHostModels(provider);
         return c.json({ opened: false, connected: true, command });
       }
       if (row.status === 'not-installed') {
@@ -1846,6 +1846,7 @@ export function createApp(deps: ServerDeps) {
       if (!opened) {
         return c.json({ error: 'No terminal emulator could be opened. Run this command manually.', command }, 409);
       }
+      invalidateHostModels(provider);
       return c.json({ opened: true, command });
     });
 
