@@ -11,6 +11,7 @@ import type {
 import type { AgentSession, SessionOptions } from './agent-runner.ts';
 import { prependSystemPrompt, trackChildExit } from './agent-runner.ts';
 import { buildChildEnv } from './agent-env.ts';
+import { parseAskRequest, type AskQuestion } from './ask.ts';
 import { AUTO_END_DELAY_MS, DEFAULT_RUN_TIMEOUT_MS } from './claude-cli-runner.ts';
 import { parseModelIdentity } from './model-identity.ts';
 import { V1TextCoalescer } from './v1-text-coalescer.ts';
@@ -28,6 +29,12 @@ export interface OpencodeRunnerOptions {
   bin?: string;
   /** Wall-clock timeout for a run (ms); per-spec `timeoutMs` still wins. */
   timeoutMs?: number;
+}
+
+interface PendingOpencodeQuestion {
+  requestId?: string;
+  askRequestId: string;
+  questions: AskQuestion[];
 }
 
 const SERVER_START_TIMEOUT_MS = 30_000;
@@ -115,6 +122,8 @@ class OpencodeSession implements AgentSession {
   private turnActive = false;
   /** `finishTurn` ran for the current turn — repeats and stray idles no-op. */
   private turnEnded = false;
+  /** Monotonic identity used to reject async work completed by an older turn. */
+  private turnSerial = 0;
   /** Settles when the open turn finishes; re-armed at each turn start. The
    *  gate `prompt` waits on so turns never overlap (see there). */
   private turnFinished: Promise<void> = Promise.resolve();
@@ -124,6 +133,15 @@ class OpencodeSession implements AgentSession {
    *  lands in R2 step 2.1). Both streams take their turn-end from the wire
    *  `session.idle` (v1 since #4 — see `finishTurn`). */
   private uiState: OpencodeUiMapperState = createOpencodeUiState();
+  /** Question tool parts are snapshots. Once capture starts for an identity,
+   * every later state snapshot for that same part/call is already handled. */
+  private readonly handledQuestionParts = new Set<string>();
+  private pendingQuestion: PendingOpencodeQuestion | undefined;
+  private questionCapture: Promise<void> | undefined;
+  private questionReply: Promise<void> | undefined;
+  /** User text submitted while a question reply POST is unsettled. It is not
+   * another answer; deliver it as ordinary prompts only after reply success. */
+  private readonly queuedQuestionMessages: string[] = [];
   private autoEndTimer: NodeJS.Timeout | undefined;
   private spawnFailed: Error | null = null;
   private timedOut = false;
@@ -235,17 +253,44 @@ class OpencodeSession implements AgentSession {
 
   sendMessage(content: ContentBlock[]): boolean {
     if (!this.serverOpen) return false;
-    if (this.autoEndTimer) {
-      clearTimeout(this.autoEndTimer);
-      this.autoEndTimer = undefined;
-    }
+    this.cancelAutoEnd();
     const text = textOf(content);
     if (!text) return true;
+    if (this.questionReply) {
+      this.queuedQuestionMessages.push(text);
+      return true;
+    }
+    if (this.pendingQuestion) {
+      const pending = this.pendingQuestion;
+      const reply = this.replyQuestion(pending, text);
+      this.questionReply = reply;
+      const clearReply = () => {
+        if (this.questionReply === reply) this.questionReply = undefined;
+      };
+      void reply.then(clearReply, clearReply);
+      return true;
+    }
     // `prompt` already emitted the note and closed the turn before rethrowing,
     // and a rejected `ready` already failed the session on the result path —
     // there is nothing left to report here.
-    void this.ready.then(() => this.prompt(text)).catch(() => undefined);
+    this.deliverPrompt(text);
     return true;
+  }
+
+  private deliverPrompt(text: string): void {
+    void this.ready.then(() => this.prompt(text)).catch(() => undefined);
+  }
+
+  private cancelAutoEnd(): void {
+    if (!this.autoEndTimer) return;
+    clearTimeout(this.autoEndTimer);
+    this.autoEndTimer = undefined;
+  }
+
+  private scheduleAutoEnd(): void {
+    if (!this.opts.autoEndAfterFirstTurn || !this.serverOpen || this.autoEndTimer) return;
+    this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
+    this.autoEndTimer.unref?.();
   }
 
   end(): void {
@@ -352,9 +397,13 @@ class OpencodeSession implements AgentSession {
     // resume in FIFO order; a teardown (`finishTurn` runs on every exit
     // path) releases them into the `serverOpen` check below.
     while (this.turnActive) await this.turnFinished;
+    // A queued prompt may have started waiting before the preceding idle armed
+    // auto-end. Cancel at actual delivery time, not only at sendMessage time.
+    this.cancelAutoEnd();
     if (!this.sessionId || !this.serverOpen) return;
     this.turnActive = true;
     this.turnEnded = false;
+    this.turnSerial += 1;
     this.turnFinished = new Promise((resolve) => {
       this.turnFinishedResolve = resolve;
     });
@@ -395,15 +444,16 @@ class OpencodeSession implements AgentSession {
     if (!this.turnActive || this.turnEnded) return;
     this.turnEnded = true;
     this.turnActive = false;
+    this.questionCapture = undefined;
+    // SSE idle can beat the independent reply HTTP response. The active reply
+    // owns pending-question cleanup; without one, the pending ask is stale.
+    if (!this.questionReply) this.pendingQuestion = undefined;
     this.turnFinishedResolve();
     // A part that never saw `time.end` (abort, server quirk) still surfaces
     // its prose before the turn boundary (run.ts reads markers there).
     this.textCoalescer.flush();
     this.emit({ type: 'turn-end' });
-    if (this.opts.autoEndAfterFirstTurn && this.serverOpen && !this.autoEndTimer) {
-      this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
-      this.autoEndTimer.unref?.();
-    }
+    if (!this.questionReply) this.scheduleAutoEnd();
   }
 
   // ---- SSE stream ---------------------------------------------------------
@@ -559,6 +609,27 @@ class OpencodeSession implements AgentSession {
       const state = (part.state as Record<string, unknown> | undefined) ?? {};
       const status = stringField(state, 'status');
       const name = stringField(part, 'tool') ?? stringField(part, 'name') ?? 'tool';
+      const questionPartId =
+        stringField(part, 'id') ?? stringField(part, 'callID') ?? messageID;
+      const questionInput = state.input ?? state;
+      const questionReady =
+        name === 'question' && (toCezarQuestions(questionInput) !== null || status !== 'pending');
+      if (
+        questionReady &&
+        this.turnActive &&
+        this.pendingQuestion === undefined &&
+        this.questionCapture === undefined &&
+        this.questionReply === undefined &&
+        (questionPartId === undefined || !this.handledQuestionParts.has(questionPartId))
+      ) {
+        if (questionPartId) this.handledQuestionParts.add(questionPartId);
+        const capture = this.captureQuestion(questionInput);
+        this.questionCapture = capture;
+        const clearCapture = () => {
+          if (this.questionCapture === capture) this.questionCapture = undefined;
+        };
+        void capture.then(clearCapture, clearCapture);
+      }
       const callId = id || `${name}-${this.toolsSeen.size}`;
       if (!this.toolsSeen.has(callId)) {
         this.toolsSeen.add(callId);
@@ -594,6 +665,99 @@ class OpencodeSession implements AgentSession {
     if (cost > this.lastCost) {
       this.emit({ type: 'cost', usd: cost - this.lastCost });
       this.lastCost = cost;
+    }
+  }
+
+  private async captureQuestion(input: unknown): Promise<void> {
+    const questions = toCezarQuestions(input);
+    const turnSerial = this.turnSerial;
+    let requestId: string | undefined;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (!this.turnActive || this.turnSerial !== turnSerial) return;
+      requestId = await this.pendingQuestionId().catch(() => undefined);
+      if (requestId) break;
+      if (attempt < 7) await sleep(150);
+    }
+    if (!this.turnActive || this.turnSerial !== turnSerial) return;
+    if (!questions) {
+      if (!requestId) {
+        this.emit({
+          type: 'error',
+          message:
+            'opencode: unsupported native question could not be rejected: no pending question id',
+        });
+        this.finishTurn();
+        this.end();
+        return;
+      }
+      try {
+        await this.http(
+          'POST',
+          `/question/${encodeURIComponent(requestId)}/reject`,
+          undefined,
+        );
+        this.emit({ type: 'note', message: 'opencode: unsupported native question rejected' });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emit({
+          type: 'error',
+          message: `opencode: unsupported native question rejection failed: ${message}`,
+        });
+        this.finishTurn();
+        this.end();
+      }
+      return;
+    }
+    const pending: PendingOpencodeQuestion = {
+      requestId,
+      askRequestId:
+        requestId ?? `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      questions,
+    };
+    this.pendingQuestion = pending;
+    this.emitQuestion(pending);
+  }
+
+  private emitQuestion(pending: PendingOpencodeQuestion): void {
+    this.emitUi((state) => ({
+      state,
+      events: [
+        {
+          type: 'ask.requested',
+          requestId: pending.askRequestId,
+          questions: pending.questions,
+        },
+      ],
+    }));
+  }
+
+  private async pendingQuestionId(): Promise<string | undefined> {
+    const value: unknown = await this.http('GET', '/question', undefined);
+    if (!Array.isArray(value)) return undefined;
+    for (const entry of value) {
+      if (!isRecord(entry) || stringField(entry, 'sessionID') !== this.sessionId) continue;
+      const id = stringField(entry, 'id');
+      if (id) return id;
+    }
+    return undefined;
+  }
+
+  private async replyQuestion(pending: PendingOpencodeQuestion, text: string): Promise<void> {
+    try {
+      const requestId = pending.requestId ?? (await this.pendingQuestionId());
+      if (!requestId) throw new Error('no pending question id');
+      pending.requestId = requestId;
+      await this.http('POST', `/question/${encodeURIComponent(requestId)}/reply`, {
+        answers: questionAnswers(pending.questions, text),
+      });
+      if (this.pendingQuestion === pending) this.pendingQuestion = undefined;
+      const queued = this.queuedQuestionMessages.splice(0);
+      for (const message of queued) this.deliverPrompt(message);
+      if (queued.length === 0 && this.turnEnded) this.scheduleAutoEnd();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit({ type: 'note', message: `opencode: question reply failed: ${message}` });
+      if (this.pendingQuestion === pending) this.emitQuestion(pending);
     }
   }
 
@@ -657,6 +821,70 @@ function textOf(content: ContentBlock[]): string {
     .map((b) => b.text)
     .join('\n')
     .trim();
+}
+
+function toCezarQuestions(value: unknown): AskQuestion[] | null {
+  if (!isRecord(value) || !Array.isArray(value.questions)) return null;
+  if (value.questions.length < 1 || value.questions.length > 4) return null;
+  const questions: AskQuestion[] = [];
+  for (const rawQuestion of value.questions) {
+    if (!isRecord(rawQuestion)) return null;
+    const header = clippedString(rawQuestion.header, 12);
+    const question = clippedString(rawQuestion.question, 400);
+    if (!header || !question || !Array.isArray(rawQuestion.options)) return null;
+    const options: AskQuestion['options'] = [];
+    for (const rawOption of rawQuestion.options) {
+      if (options.length === 4) break;
+      if (!isRecord(rawOption)) continue;
+      const label = clippedString(rawOption.label, 60);
+      if (!label) continue;
+      const description = clippedString(rawOption.description, 280);
+      options.push({ label, ...(description ? { description } : {}) });
+    }
+    if (options.length < 2) return null;
+    questions.push({
+      header,
+      question,
+      options,
+      ...(rawQuestion.multiple === true ? { multiSelect: true } : {}),
+    });
+  }
+  return parseAskRequest({ questions })?.questions ?? null;
+}
+
+function questionAnswers(questions: AskQuestion[], text: string): string[][] {
+  const answers = questions.map(() => [] as string[]);
+  const matched = new Set<number>();
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    const index = questions.findIndex(
+      (question, questionIndex) =>
+        !matched.has(questionIndex) && trimmed.startsWith(`${question.header}:`),
+    );
+    if (index < 0) continue;
+    matched.add(index);
+    answers[index] = trimmed
+      .slice(questions[index]!.header.length + 1)
+      .split(',')
+      .map((answer) => answer.trim())
+      .filter(Boolean);
+  }
+  if (matched.size === 0 && answers[0]) answers[0] = [text.trim()];
+  return answers;
+}
+
+function clippedString(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
