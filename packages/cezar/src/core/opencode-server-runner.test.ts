@@ -169,8 +169,10 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
   async function startMockServer(opts: MockServerOptions = {}) {
     const clients: ServerResponse[] = [];
     const promptPosts: string[] = [];
+    const promptBodies: unknown[] = [];
     const questionGets: number[] = [];
     const questionReplies: Array<{ path: string; body: unknown }> = [];
+    const questionRejects: Array<{ path: string; body: unknown }> = [];
     const pendingQuestions: unknown[] = [];
     let questionReplyStatus = opts.questionReplyStatus ?? 200;
     const server = createServer((req, res) => {
@@ -210,6 +212,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
         }
         if (req.method === 'POST' && /^\/session\/ses_test\/(prompt_async|message)$/.test(url)) {
           promptPosts.push(url);
+          promptBodies.push(JSON.parse(body || '{}'));
           res.writeHead(opts.promptStatus ?? 200, { 'content-type': 'application/json' });
           res.end('{}');
           return;
@@ -224,6 +227,12 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
           else reply();
           return;
         }
+        if (req.method === 'POST' && /^\/question\/[^/]+\/reject$/.test(url)) {
+          questionRejects.push({ path: url, body: JSON.parse(body || '{}') });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{}');
+          return;
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{}');
       });
@@ -233,8 +242,10 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     return {
       url: `http://127.0.0.1:${port}`,
       promptPosts,
+      promptBodies,
       questionGets,
       questionReplies,
+      questionRejects,
       pendingQuestions,
       setQuestionReplyStatus(status: number): void {
         questionReplyStatus = status;
@@ -328,7 +339,12 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     }
   }
 
-  function sendQuestion(mock: Harness['mock'], input: unknown, id = 'tool_question'): void {
+  function sendQuestion(
+    mock: Harness['mock'],
+    input: unknown,
+    id = 'tool_question',
+    status = 'running',
+  ): void {
     mock.send({
       type: 'message.part.updated',
       properties: {
@@ -337,7 +353,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
           sessionID: 'ses_test',
           type: 'tool',
           tool: 'question',
-          state: { status: 'running', input },
+          state: { status, input },
         },
       },
     });
@@ -544,7 +560,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     });
   });
 
-  it('caps native question fields, omits malformed questions, and uses plain text for the first answer', async () => {
+  it('caps native question fields and options and uses plain text for the first answer', async () => {
     await withSession({}, async ({ uiEvents, mock, session }) => {
       await waitFor(() => mock.promptPosts.length === 1);
       mock.pendingQuestions.push({ id: 'q_caps', sessionID: 'ses_test' });
@@ -565,17 +581,6 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
             header: 'Deploy',
             question: 'Which environment?',
             options: [{ label: 'Staging' }, { label: 'Production' }],
-          },
-          {
-            header: 'Invalid',
-            question: 'Not enough choices?',
-            options: [{ label: 'Only one' }, { label: '   ' }, null],
-          },
-          null,
-          {
-            header: 'Too late',
-            question: 'Should not be iterated?',
-            options: [{ label: 'Yes' }, { label: 'No' }],
           },
         ],
       });
@@ -742,6 +747,246 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       expect(mock.questionGets).toHaveLength(1);
       expect(mock.questionReplies).toHaveLength(1);
       expect(mock.promptPosts).toHaveLength(1);
+    });
+  });
+
+  it('never recaptures a handled question part but captures a different part in a later turn', async () => {
+    await withSession({}, async ({ events, uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_once', sessionID: 'ses_test' });
+      const input = {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      };
+      sendQuestion(mock, input, 'part_once');
+      await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 1);
+
+      session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      await sleep(40);
+      sendQuestion(mock, input, 'part_once', 'completed');
+      await sleep(80);
+
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toHaveLength(1);
+      expect(mock.questionGets).toHaveLength(1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => count(events, 'turn-end') === 1);
+      session.sendMessage([{ type: 'text', text: 'continue' }]);
+      await waitFor(() => mock.promptPosts.length === 2);
+      mock.pendingQuestions.splice(0, 1, { id: 'q_later', sessionID: 'ses_test' });
+      sendQuestion(mock, input, 'part_later');
+      await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 2);
+      expect(mock.questionGets).toHaveLength(2);
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')[1]).toMatchObject({
+        requestId: 'q_later',
+      });
+    });
+  });
+
+  it('queues messages sent during a successful question reply and prompts in order after idle', async () => {
+    await withSession({ questionReplyDelayMs: 180 }, async ({ events, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_queue', sessionID: 'ses_test' });
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+      await waitFor(() => mock.questionGets.length === 1);
+
+      session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      session.sendMessage([{ type: 'text', text: 'first queued prompt' }]);
+      session.sendMessage([{ type: 'text', text: 'second queued prompt' }]);
+      await sleep(240);
+      expect(mock.promptPosts).toHaveLength(1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => mock.promptPosts.length === 2);
+      expect(mock.promptBodies[1]).toEqual({ parts: [{ type: 'text', text: 'first queued prompt' }] });
+      expect(count(events, 'turn-end')).toBe(1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => mock.promptPosts.length === 3);
+      expect(mock.promptBodies[2]).toEqual({ parts: [{ type: 'text', text: 'second queued prompt' }] });
+    });
+  });
+
+  it('keeps queued text through a failed reply until a later explicit answer succeeds', async () => {
+    await withSession(
+      { questionReplyStatus: 500, questionReplyDelayMs: 120 },
+      async ({ events, mock, session }) => {
+        await waitFor(() => mock.promptPosts.length === 1);
+        mock.pendingQuestions.push({ id: 'q_queue_retry', sessionID: 'ses_test' });
+        sendQuestion(mock, {
+          questions: [
+            {
+              header: 'Choice',
+              question: 'Which option?',
+              options: [{ label: 'One' }, { label: 'Two' }],
+            },
+          ],
+        });
+        await waitFor(() => mock.questionGets.length === 1);
+
+        session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+        await waitFor(() => mock.questionReplies.length === 1);
+        session.sendMessage([{ type: 'text', text: 'queued after failed answer' }]);
+        await waitFor(() =>
+          events.some(
+            (event) => event.type === 'note' && event.message.includes('question reply failed'),
+          ),
+        );
+        expect(mock.promptPosts).toHaveLength(1);
+        expect(mock.questionReplies).toHaveLength(1);
+
+        mock.setQuestionReplyStatus(200);
+        session.sendMessage([{ type: 'text', text: 'Choice: Two' }]);
+        await waitFor(() => mock.questionReplies.length === 2);
+        await sleep(180);
+        expect(mock.questionReplies.map((reply) => reply.body)).toEqual([
+          { answers: [['One']] },
+          { answers: [['Two']] },
+        ]);
+        expect(mock.promptPosts).toHaveLength(1);
+
+        mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+        await waitFor(() => mock.promptPosts.length === 2);
+        expect(mock.promptBodies[1]).toEqual({
+          parts: [{ type: 'text', text: 'queued after failed answer' }],
+        });
+      },
+    );
+  });
+
+  it('rejects malformed-first native input without shifting the valid second question', async () => {
+    await withSession({}, async ({ events, uiEvents, mock }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_malformed_first', sessionID: 'ses_test' });
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Broken',
+            question: 'Cannot represent this?',
+            options: [{ label: 'Only one' }],
+          },
+          {
+            header: 'Valid',
+            question: 'Must not shift?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      });
+
+      await waitFor(() =>
+        events.some(
+          (event) =>
+            event.type === 'note' &&
+            event.message === 'opencode: unsupported native question rejected',
+        ),
+      );
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([]);
+      expect(mock.questionReplies).toEqual([]);
+      expect(mock.questionRejects).toEqual([
+        { path: '/question/q_malformed_first/reject', body: {} },
+      ]);
+      expect(events).toContainEqual({
+        type: 'note',
+        message: 'opencode: unsupported native question rejected',
+      });
+    });
+  });
+
+  it.each([
+    ['empty list', { questions: [] }],
+    [
+      'more than four questions',
+      {
+        questions: Array.from({ length: 5 }, (_, index) => ({
+          header: `Q${index}`,
+          question: `Question ${index}?`,
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        })),
+      },
+    ],
+    [
+      'malformed question',
+      {
+        questions: [null],
+      },
+    ],
+    [
+      'fewer than two usable options',
+      {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: '  ' }, null],
+          },
+        ],
+      },
+    ],
+    [
+      'schema uniqueness failure',
+      {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'Same' }, { label: 'Same' }],
+          },
+        ],
+      },
+    ],
+  ])('rejects invalid native input with a found ID: %s', async (_label, input) => {
+    await withSession({}, async ({ events, uiEvents, mock }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_invalid', sessionID: 'ses_test' });
+      sendQuestion(mock, input);
+
+      await waitFor(() =>
+        events.some(
+          (event) =>
+            event.type === 'note' &&
+            event.message === 'opencode: unsupported native question rejected',
+        ),
+      );
+      expect(mock.questionGets).toHaveLength(1);
+      expect(mock.questionReplies).toEqual([]);
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([]);
+      expect(events).toContainEqual({
+        type: 'note',
+        message: 'opencode: unsupported native question rejected',
+      });
+      expect(count(events, 'turn-end')).toBe(0);
+    });
+  });
+
+  it('terminates the turn and session when an invalid native request ID cannot be found', async () => {
+    await withSession({}, async ({ events, uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      sendQuestion(mock, { questions: [] });
+
+      await waitFor(() => !session.open);
+      expect(mock.questionGets).toHaveLength(8);
+      expect(mock.questionRejects).toEqual([]);
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([]);
+      expect(events).toContainEqual({
+        type: 'error',
+        message: 'opencode: unsupported native question could not be rejected: no pending question id',
+      });
+      expect(count(events, 'turn-end')).toBe(1);
     });
   });
 

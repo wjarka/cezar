@@ -261,8 +261,10 @@ Codex native requests receive an error response rather than hanging the turn.
 OpenCode likewise bridges its native `question` tool: the runner discovers the
 main session's pending request through `GET /question`, emits `ask.requested`,
 and routes the next answer to `POST /question/:id/reply`; malformed question
-input emits no ask card. A malformed marker degrades to plain text — the prose
-fallback is never made worse. A native `AskUserQuestion`
+input emits no ask card and is rejected through `POST /question/:id/reject` so
+the native turn cannot remain blocked. If the pending request cannot be found,
+the runner terminates the turn instead of hanging. A malformed marker degrades
+to plain text — the prose fallback is never made worse. A native `AskUserQuestion`
 control-protocol bridge for claude (the `control_request can_use_tool` path) is a
 possible future enhancement; the marker is the portable baseline.
 

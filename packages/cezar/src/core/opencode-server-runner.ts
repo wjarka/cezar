@@ -133,9 +133,15 @@ class OpencodeSession implements AgentSession {
    *  lands in R2 step 2.1). Both streams take their turn-end from the wire
    *  `session.idle` (v1 since #4 — see `finishTurn`). */
   private uiState: OpencodeUiMapperState = createOpencodeUiState();
+  /** Question tool parts are snapshots. Once capture starts for an identity,
+   * every later state snapshot for that same part/call is already handled. */
+  private readonly handledQuestionParts = new Set<string>();
   private pendingQuestion: PendingOpencodeQuestion | undefined;
   private questionCapture: Promise<void> | undefined;
   private questionReply: Promise<void> | undefined;
+  /** User text submitted while a question reply POST is unsettled. It is not
+   * another answer; deliver it as ordinary prompts only after reply success. */
+  private readonly queuedQuestionMessages: string[] = [];
   private autoEndTimer: NodeJS.Timeout | undefined;
   private spawnFailed: Error | null = null;
   private timedOut = false;
@@ -253,7 +259,10 @@ class OpencodeSession implements AgentSession {
     }
     const text = textOf(content);
     if (!text) return true;
-    if (this.questionReply) return true;
+    if (this.questionReply) {
+      this.queuedQuestionMessages.push(text);
+      return true;
+    }
     if (this.pendingQuestion) {
       const pending = this.pendingQuestion;
       const reply = this.replyQuestion(pending, text);
@@ -267,8 +276,12 @@ class OpencodeSession implements AgentSession {
     // `prompt` already emitted the note and closed the turn before rethrowing,
     // and a rejected `ready` already failed the session on the result path —
     // there is nothing left to report here.
-    void this.ready.then(() => this.prompt(text)).catch(() => undefined);
+    this.deliverPrompt(text);
     return true;
+  }
+
+  private deliverPrompt(text: string): void {
+    void this.ready.then(() => this.prompt(text)).catch(() => undefined);
   }
 
   end(): void {
@@ -586,13 +599,17 @@ class OpencodeSession implements AgentSession {
       const state = (part.state as Record<string, unknown> | undefined) ?? {};
       const status = stringField(state, 'status');
       const name = stringField(part, 'tool') ?? stringField(part, 'name') ?? 'tool';
+      const questionPartId =
+        stringField(part, 'id') ?? stringField(part, 'callID') ?? messageID;
       if (
         name === 'question' &&
         this.turnActive &&
         this.pendingQuestion === undefined &&
         this.questionCapture === undefined &&
-        this.questionReply === undefined
+        this.questionReply === undefined &&
+        (questionPartId === undefined || !this.handledQuestionParts.has(questionPartId))
       ) {
+        if (questionPartId) this.handledQuestionParts.add(questionPartId);
         const capture = this.captureQuestion(state.input ?? state);
         this.questionCapture = capture;
         const clearCapture = () => {
@@ -640,7 +657,6 @@ class OpencodeSession implements AgentSession {
 
   private async captureQuestion(input: unknown): Promise<void> {
     const questions = toCezarQuestions(input);
-    if (!questions) return;
     const turnSerial = this.turnSerial;
     let requestId: string | undefined;
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -650,6 +666,35 @@ class OpencodeSession implements AgentSession {
       if (attempt < 7) await sleep(150);
     }
     if (!this.turnActive || this.turnSerial !== turnSerial) return;
+    if (!questions) {
+      if (!requestId) {
+        this.emit({
+          type: 'error',
+          message:
+            'opencode: unsupported native question could not be rejected: no pending question id',
+        });
+        this.finishTurn();
+        this.end();
+        return;
+      }
+      try {
+        await this.http(
+          'POST',
+          `/question/${encodeURIComponent(requestId)}/reject`,
+          undefined,
+        );
+        this.emit({ type: 'note', message: 'opencode: unsupported native question rejected' });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emit({
+          type: 'error',
+          message: `opencode: unsupported native question rejection failed: ${message}`,
+        });
+        this.finishTurn();
+        this.end();
+      }
+      return;
+    }
     const pending: PendingOpencodeQuestion = {
       requestId,
       askRequestId:
@@ -693,6 +738,8 @@ class OpencodeSession implements AgentSession {
         answers: questionAnswers(pending.questions, text),
       });
       if (this.pendingQuestion === pending) this.pendingQuestion = undefined;
+      const queued = this.queuedQuestionMessages.splice(0);
+      for (const message of queued) this.deliverPrompt(message);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.emit({ type: 'note', message: `opencode: question reply failed: ${message}` });
@@ -764,12 +811,13 @@ function textOf(content: ContentBlock[]): string {
 
 function toCezarQuestions(value: unknown): AskQuestion[] | null {
   if (!isRecord(value) || !Array.isArray(value.questions)) return null;
+  if (value.questions.length < 1 || value.questions.length > 4) return null;
   const questions: AskQuestion[] = [];
-  for (const rawQuestion of value.questions.slice(0, 4)) {
-    if (!isRecord(rawQuestion)) continue;
+  for (const rawQuestion of value.questions) {
+    if (!isRecord(rawQuestion)) return null;
     const header = clippedString(rawQuestion.header, 12);
     const question = clippedString(rawQuestion.question, 400);
-    if (!header || !question || !Array.isArray(rawQuestion.options)) continue;
+    if (!header || !question || !Array.isArray(rawQuestion.options)) return null;
     const options: AskQuestion['options'] = [];
     for (const rawOption of rawQuestion.options) {
       if (options.length === 4) break;
@@ -779,7 +827,7 @@ function toCezarQuestions(value: unknown): AskQuestion[] | null {
       const description = clippedString(rawOption.description, 280);
       options.push({ label, ...(description ? { description } : {}) });
     }
-    if (options.length < 2) continue;
+    if (options.length < 2) return null;
     questions.push({
       header,
       question,
