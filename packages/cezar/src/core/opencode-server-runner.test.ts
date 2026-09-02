@@ -524,8 +524,8 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
           },
         ],
       };
-      sendQuestion(mock, input);
-      sendQuestion(mock, input);
+      sendQuestion(mock, input, 'tool_question', 'pending');
+      sendQuestion(mock, input, 'tool_question', 'pending');
 
       await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
       expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([
@@ -788,6 +788,51 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       expect(mock.questionGets).toHaveLength(2);
       expect(uiEvents.filter((event) => event.type === 'ask.requested')[1]).toMatchObject({
         requestId: 'q_later',
+      });
+    });
+  });
+
+  it('waits for a valid later snapshot of the same pending question part', async () => {
+    await withSession({}, async ({ uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_parsed_later', sessionID: 'ses_test' });
+      const input = {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      };
+
+      sendQuestion(mock, {}, 'part_parsed_later', 'pending');
+      await sleep(80);
+      expect(mock.questionGets).toEqual([]);
+      expect(mock.questionRejects).toEqual([]);
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toEqual([]);
+
+      sendQuestion(mock, input, 'part_parsed_later', 'running');
+      await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
+      expect(mock.questionGets).toHaveLength(1);
+      expect(mock.questionRejects).toEqual([]);
+      expect(uiEvents.find((event) => event.type === 'ask.requested')).toEqual({
+        type: 'ask.requested',
+        requestId: 'q_parsed_later',
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+
+      session.sendMessage([{ type: 'text', text: 'Choice: Two' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      expect(mock.questionReplies[0]).toEqual({
+        path: '/question/q_parsed_later/reply',
+        body: { answers: [['Two']] },
       });
     });
   });

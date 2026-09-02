@@ -611,8 +611,11 @@ class OpencodeSession implements AgentSession {
       const name = stringField(part, 'tool') ?? stringField(part, 'name') ?? 'tool';
       const questionPartId =
         stringField(part, 'id') ?? stringField(part, 'callID') ?? messageID;
+      const questionInput = state.input ?? state;
+      const questionReady =
+        name === 'question' && (toCezarQuestions(questionInput) !== null || status !== 'pending');
       if (
-        name === 'question' &&
+        questionReady &&
         this.turnActive &&
         this.pendingQuestion === undefined &&
         this.questionCapture === undefined &&
@@ -620,7 +623,7 @@ class OpencodeSession implements AgentSession {
         (questionPartId === undefined || !this.handledQuestionParts.has(questionPartId))
       ) {
         if (questionPartId) this.handledQuestionParts.add(questionPartId);
-        const capture = this.captureQuestion(state.input ?? state);
+        const capture = this.captureQuestion(questionInput);
         this.questionCapture = capture;
         const clearCapture = () => {
           if (this.questionCapture === capture) this.questionCapture = undefined;
