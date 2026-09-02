@@ -285,7 +285,12 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
   }
 
   async function withSession(
-    opts: { promptStatus?: number; refuseSse?: boolean; sseStatus?: number },
+    opts: {
+      promptStatus?: number;
+      refuseSse?: boolean;
+      sseStatus?: number;
+      onUiEvent?: (event: UiEvent) => void;
+    },
     run: (h: Harness) => Promise<void>,
   ): Promise<void> {
     const mock = await startMockServer(opts);
@@ -295,7 +300,12 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     const session = new OpencodeServerRunner({ bin: 'opencode', timeoutMs: 30_000 }).startSession(
       { userPrompt: 'go', cwd: process.cwd() },
       (e) => events.push(e),
-      { onUiEvent: (e) => uiEvents.push(e) },
+      {
+        onUiEvent: (e) => {
+          uiEvents.push(e);
+          opts.onUiEvent?.(e);
+        },
+      },
     );
     try {
       await run({ events, uiEvents, mock, session });
@@ -586,6 +596,67 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       });
       expect(mock.promptPosts).toHaveLength(1);
     });
+  });
+
+  it('routes repeated Header lines to matching questions in order', async () => {
+    await withSession({}, async ({ uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_repeated', sessionID: 'ses_test' });
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which database?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+          {
+            header: 'Choice',
+            question: 'Which cache?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+      await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
+
+      session.sendMessage([{ type: 'text', text: 'Choice: One\nChoice: Two' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      expect(mock.questionReplies[0]).toEqual({
+        path: '/question/q_repeated/reply',
+        body: { answers: [['One'], ['Two']] },
+      });
+    });
+  });
+
+  it('contains an onUiEvent exception while emitting a native ask', async () => {
+    await withSession(
+      {
+        onUiEvent: (event) => {
+          if (event.type === 'ask.requested') throw new Error('consumer failed');
+        },
+      },
+      async ({ events, uiEvents, mock, session }) => {
+        await waitFor(() => mock.promptPosts.length === 1);
+        mock.pendingQuestions.push({ id: 'q_throw', sessionID: 'ses_test' });
+        sendQuestion(mock, {
+          questions: [
+            {
+              header: 'Choice',
+              question: 'Which option?',
+              options: [{ label: 'One' }, { label: 'Two' }],
+            },
+          ],
+        });
+        await waitFor(() => uiEvents.some((event) => event.type === 'ask.requested'));
+
+        session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+        await waitFor(() => mock.questionReplies.length === 1);
+        expect(mock.questionReplies[0]).toEqual({
+          path: '/question/q_throw/reply',
+          body: { answers: [['One']] },
+        });
+        expect(events.some((event) => event.type === 'error')).toBe(false);
+      },
+    );
   });
 
   it('does not post a prompt when all pending-question ID lookups fail', async () => {

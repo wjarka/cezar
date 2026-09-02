@@ -581,9 +581,10 @@ class OpencodeSession implements AgentSession {
       ) {
         const capture = this.captureQuestion(state.input ?? state);
         this.questionCapture = capture;
-        void capture.finally(() => {
+        const clearCapture = () => {
           if (this.questionCapture === capture) this.questionCapture = undefined;
-        });
+        };
+        void capture.then(clearCapture, clearCapture);
       }
       const callId = id || `${name}-${this.toolsSeen.size}`;
       if (!this.toolsSeen.has(callId)) {
@@ -636,11 +637,16 @@ class OpencodeSession implements AgentSession {
     }
     if (!this.turnActive || this.turnSerial !== turnSerial) return;
     this.pendingQuestion = { requestId, questions };
-    this.opts.onUiEvent?.({
-      type: 'ask.requested',
-      requestId: requestId ?? `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      questions,
-    });
+    this.emitUi((state) => ({
+      state,
+      events: [
+        {
+          type: 'ask.requested',
+          requestId: requestId ?? `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          questions,
+        },
+      ],
+    }));
   }
 
   private async pendingQuestionId(): Promise<string | undefined> {
@@ -765,19 +771,22 @@ function toCezarQuestions(value: unknown): AskQuestion[] | null {
 
 function questionAnswers(questions: AskQuestion[], text: string): string[][] {
   const answers = questions.map(() => [] as string[]);
-  let matched = false;
+  const matched = new Set<number>();
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
-    const index = questions.findIndex((question) => trimmed.startsWith(`${question.header}:`));
+    const index = questions.findIndex(
+      (question, questionIndex) =>
+        !matched.has(questionIndex) && trimmed.startsWith(`${question.header}:`),
+    );
     if (index < 0) continue;
-    matched = true;
+    matched.add(index);
     answers[index] = trimmed
       .slice(questions[index]!.header.length + 1)
       .split(',')
       .map((answer) => answer.trim())
       .filter(Boolean);
   }
-  if (!matched && answers[0]) answers[0] = [text.trim()];
+  if (matched.size === 0 && answers[0]) answers[0] = [text.trim()];
   return answers;
 }
 
