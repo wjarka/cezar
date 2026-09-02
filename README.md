@@ -31,7 +31,7 @@ your phone, working your backlog while you're away.
 
 ```bash
 cd your-repo
-npx cezar-cli        # → cockpit at http://localhost:4321
+npx cezarion         # → cockpit at http://localhost:4321
 ```
 
 That's the whole setup. If your `claude` CLI is logged in (Pro/Max) and `gh` is
@@ -58,7 +58,7 @@ Plenty of tools wrap a single coding agent in a nicer window — a "Codex GUI", 
 conductor-style app, one-agent front-ends. cezar's bet is different. Three things
 it does better than any of them:
 
-- 🪶 **Genuinely zero config.** `npx cezar-cli` in your repo and you're running —
+- 🪶 **Genuinely zero config.** `npx cezarion` in your repo and you're running —
   no wizard, no API keys, no env vars, no schema, no database. It rides the
   `claude` / `codex` / `opencode` / `pi` logins and the `gh` you already have, and every
   missing piece degrades gracefully instead of blocking you.
@@ -145,24 +145,24 @@ the [`codex` CLI](https://github.com/openai/codex), or
 
 ```bash
 cd your-repo
-npx cezar-cli              # start the cockpit for the current repo
-#   or: npx @open-mercato/cezar
+npx cezarion               # start the cockpit for the current repo
+#   or: npx @wjarka/cezarion
 ```
 
 The cockpit opens at `http://localhost:4321` (auto-picks the next free port if
 busy). Type a task, pick a workflow, hit **Start**. That's it.
 
 ```bash
-npx cezar-cli run "add a --json flag to the export command"   # headless, CI-friendly
-npx cezar-cli init                                            # scaffold .ai/cezar/
+npx cezarion run "add a --json flag to the export command"   # headless, CI-friendly
+npx cezarion init                                            # scaffold .ai/cezar/
 ```
 
-Both the `cezar` and `cez` commands are installed, so once it's on your PATH you
+Both the `cezarion` and `cez` commands are installed, so once it's on your PATH you
 can run either. No API key is ever used — cezar shells out to whichever agent
 CLIs you are already logged into, `claude` by default.
 
 > **Contributing?** [Local development](#local-development) shows how to get a
-> global `cezar` command straight off your checkout (`npm run install-as-command`)
+> global `cez` command straight off your checkout (`npm run install-as-command`)
 > — no publish needed.
 
 > **Just kicking the tires?** Set `CEZ_DRY_RUN=1` to run against a bundled mock
@@ -175,13 +175,13 @@ Every night we publish the trunk to npm, so the features landing in the next
 release are one command away:
 
 ```bash
-npx cezar-cli@nightly      # everything merged as of last night
+npx cezarion@nightly       # everything merged as of last night
 ```
 
 **Come build this with us.** cezar is shaped by the people who run it on real
 repos: if you try a nightly and something feels wrong — a workflow that stalls, a
 diff that reads badly, a runner that should exist — [open an
-issue](https://github.com/open-mercato/cezar/issues) and tell us. That feedback,
+issue](https://github.com/wjarka/cezar/issues) and tell us. That feedback,
 early, is worth more than a bug report six weeks after a release, and it is how
 most of the features here got their final shape.
 
@@ -191,9 +191,9 @@ can be rough, a flag or a screen may change under you, and something occasionall
 breaks in a way no test caught. Nothing is at risk beyond your patience — every
 task runs in its own git worktree and cezar never auto-merges — but if you need a
 boring day, stay on the stable release. Pin a nightly you liked with its exact
-version (`npx cezar-cli@0.9.2-nightly.20260813.126` — the cockpit prints the
+version (`npx cezarion@0.9.2-nightly.20260813.126` — the cockpit prints the
 version it booted, and the date in it tells you how old the build is), and drop
-back to stable any time with a plain `npx cezar-cli`.
+back to stable any time with a plain `npx cezarion`.
 
 ### Preview builds
 
@@ -202,13 +202,13 @@ Every green CI run also publishes an installable npm snapshot
 merged yet:
 
 ```bash
-npx cezar-cli@develop      # current develop head
+npx cezarion@develop       # current develop head
 ```
 
 Every pull request gets its own preview too — the CI bot posts a sticky comment
 on the PR with the exact pinned version to copy-paste
-(`npx cezar-cli@<version>-pr<N>.<run>`). Nightlies and previews are all
-prerelease versions under their own dist-tags; a plain `npx cezar-cli` always
+(`npx cezarion@<version>-pr<N>.<run>`). Nightlies and previews are all
+prerelease versions under their own dist-tags; a plain `npx cezarion` always
 resolves to the latest stable release.
 
 ---
@@ -323,7 +323,7 @@ Eight views, one browser window, all live over Server-Sent Events (seven until y
 | **Workflows** | Build a chain by drag-ordering skills, save it as portable YAML, import/export, or delete. Built-ins always come back. |
 | **Settings** | Appearance (dark/light theme, accent, density), agent backends, notifications, and the skills catalog. |
 
-The cockpit is a React app served pre-built from the package — `npx cezar-cli`
+The cockpit is a React app served pre-built from the package — `npx cezarion`
 still means no build step and no dev server on your machine — with a dark/light
 theme, a ⌘K command palette, and bookmarklets that launch a task straight from
 a GitHub page.
@@ -332,7 +332,7 @@ a GitHub page.
 
 ## Multiple projects, one cockpit
 
-One `cezar serve` hosts **every repo you work in**, not just the one you started
+One `cez serve` hosts **every repo you work in**, not just the one you started
 it in. Each repo cezar boots in registers itself in a per-user registry at
 `~/.cezar/config.json` — the workspace file that also holds the global knobs
 (the parallel cap, the memory ceiling, the browse root, and the checkout root). Nothing is added to
@@ -368,10 +368,10 @@ re-registers itself at the next start.
 **From the terminal** — the same registry, no cockpit required (handy over ssh):
 
 ```bash
-cezar projects                    # list: id, branch or status, path, tags
-cezar projects add ~/code/api     # register a folder (defaults to the current repo)
-cezar projects remove api         # drop the registry entry; the repo is untouched
-cezar projects tag api storefront backend   # set the grouping tags (no tags clears them)
+cez projects                      # list: id, branch or status, path, tags
+cez projects add ~/code/api       # register a folder (defaults to the current repo)
+cez projects remove api           # drop the registry entry; the repo is untouched
+cez projects tag api storefront backend     # set the grouping tags (no tags clears them)
 ```
 
 These read and write `~/.cezar/config.json` directly, so they work with the
@@ -543,7 +543,7 @@ Useful environment variables:
 | `CEZ_TITLE_UPDATES=0` | Turn off the live task-title refresh (namer re-runs on each turn end). The Settings → Agents toggle overrides this default. |
 | `CEZ_AUTONAME=0` | Disable ALL LLM task naming (creation + live) — titles stay heuristic (`437: /om-auto-review-pr`). Under `CEZ_DRY_RUN=1` naming is already off unless forced with `CEZ_AUTONAME=1`. |
 | `CEZ_REVIEW_GATE=1` | Turn ON the optional diff-first review gate (#489): a successful, non-autonomous run with changes parks at `review` (Accept / Send back / Draft PR) instead of finishing. Off by default — changed runs settle to `done` with the diff left in the worktree. Only `1` enables. The Settings → Agents toggle overrides this; autonomous runs always skip it. |
-| `CEZ_NO_BANNER=1` | Skip the `open-mercato/skills` banner on `cezar serve` startup. (The cockpit no longer shows a banner — its skills now live on the Skills page's Manage panel — so this env var is the terminal banner's only switch.) |
+| `CEZ_NO_BANNER=1` | Skip the `open-mercato/skills` banner on `cez serve` startup. (The cockpit no longer shows a banner — its skills now live on the Skills page's Manage panel — so this env var is the terminal banner's only switch.) |
 | `VITE_CEZ_API_BASE=http://localhost:4321` | **Build time only**, and only when the cockpit bundle is deployed apart from the service it talks to. Empty (the default) means "the origin that served this page", which is right for both normal cases: the CLI serves the bundle itself, and `npm run dev` proxies `/api` to the local service. A deployment that must be configured without a rebuild can put `<meta name="cez-api-base" content="…">` in the served HTML instead, which wins over this. |
 
 ### Troubleshooting: the agent's shell returns nothing
@@ -653,12 +653,12 @@ strategy**, and never escalates silently: every privileged command is printed
 and verified, and it ends with a real authenticated end-to-end check.
 
 ```bash
-npx cezar-cli server-install   --platform ubuntu-vps   # stand it up
-npx cezar-cli server-deploy    --platform ubuntu-vps   # roll out a new version (reload the service)
-npx cezar-cli server-uninstall --platform ubuntu-vps   # reverse it
+npx cezarion server-install   --platform ubuntu-vps   # stand it up
+npx cezarion server-deploy    --platform ubuntu-vps   # roll out a new version (reload the service)
+npx cezarion server-uninstall --platform ubuntu-vps   # reverse it
 
 # host a SECOND cockpit for another domain on the same box (ubuntu-vps):
-npx cezar-cli server-install   --platform ubuntu-vps --domain shop.example.com
+npx cezarion server-install   --platform ubuntu-vps --domain shop.example.com
 ```
 
 On `ubuntu-vps` a single host can run several independent cockpits — add
@@ -670,7 +670,7 @@ nginx already owns `:80/:443`, cezar's would fight it for the ports. Install the
 service only and let your proxy front it:
 
 ```bash
-npx cezar-cli server-install --platform ubuntu-vps \
+npx cezarion server-install --platform ubuntu-vps \
   --external-proxy --domain cezar.example.com --bind-host 172.17.0.1
 ```
 
@@ -748,7 +748,7 @@ hosted cockpit (`CEZ_REMOTE=1`) is read-only and never serves home-file contents
 
 ## Local development
 
-End-to-end, from a fresh clone to a global `cezar` command you can run in **any**
+End-to-end, from a fresh clone to a global `cez` command you can run in **any**
 repo on your machine — no npm publish required.
 
 **1. Prerequisites** — Node 20+ and `git` (plus at least one logged-in agent CLI,
@@ -757,7 +757,7 @@ as in [Quick start](#quick-start)).
 **2. Clone & install**
 
 ```bash
-git clone https://github.com/open-mercato/cezar.git
+git clone https://github.com/wjarka/cezar.git
 cd cezar
 npm install
 ```
@@ -769,7 +769,7 @@ npm install
 npm run build
 ```
 
-**4. Install as a global command** — build + put `cezar` / `cez` / `cezar-cli` on
+**4. Install as a global command** — build + put `cezarion` / `cez` on
 your PATH pointing at *this checkout*:
 
 ```bash
@@ -781,8 +781,8 @@ Now `cd` into any other repo and run it:
 
 ```bash
 cd ~/some-other-project
-cezar            # cockpit for that repo, straight off your checkout
-cezar-cli --help # same binary; the name matches `npx cezar-cli`
+cez              # cockpit for that repo, straight off your checkout
+cezarion --help  # same binary; the name matches `npx cezarion`
 ```
 
 **5. The change loop**
@@ -796,20 +796,20 @@ cezar-cli --help # same binary; the name matches `npx cezar-cli`
 **6. Uninstall**
 
 ```bash
-npm run uninstall-as-command    # removes cezar / cez / cezar-cli (either flavor)
+npm run uninstall-as-command    # removes cezarion / cez (either flavor)
 ```
 
 **7. Troubleshooting**
 
-- **`cezar: command not found`** after install → your npm global bin dir isn't on
+- **`cez: command not found`** after install → your npm global bin dir isn't on
   PATH. The script prints the exact dir; add it to your shell profile
   (`export PATH="$(npm prefix -g)/bin:$PATH"`).
 - **`EACCES` / permission denied** → your global prefix is root-owned. Point npm
   at a user-writable one and retry — **never** sudo:
   `npm config set prefix ~/.npm-global`.
-- **Already installed the published `@open-mercato/cezar` globally?** The
+- **Already installed the published `@wjarka/cezarion` globally?** The
   link/snapshot install replaces it; `uninstall-as-command` removes ours, and
-  `npm i -g @open-mercato/cezar` brings the published one back.
+  `npm i -g @wjarka/cezarion` brings the published one back.
 
 ### In-checkout scripts
 

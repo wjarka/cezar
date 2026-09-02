@@ -1,14 +1,14 @@
 # Backward compatibility — protected surfaces
 
-cezar is a published npm CLI (`@open-mercato/cezar`, currently 0.x — renamed from the now-deprecated `@pat-lewczuk/cezar` when the package moved to the open-mercato org; the unscoped `npx cezar-cli` alias is unchanged) whose state lives as plain files inside users' repos. Users upgrade with `npx cezar@latest` against `.ai/cezar/` directories written by older versions, and they script the CLI and hand-edit the files — the README promises "plain JSON, NDJSON and Markdown you can `cat` and fix by hand." That promise is the compatibility contract.
+cezar is a published npm CLI (`@wjarka/cezarion`, currently 0.x, installed as `npx cezarion` — this clone took its own npm identity in #23 and has never published under upstream's `@open-mercato/cezar` or `cezar-cli` names) whose state lives as plain files inside users' repos. Users upgrade with `npx cezarion@latest` against `.ai/cezar/` directories written by older versions, and they script the CLI and hand-edit the files — the README promises "plain JSON, NDJSON and Markdown you can `cat` and fix by hand." That promise is the compatibility contract.
 
 **General rule for every surface below:** additive changes (new optional field, new flag, new route) are fine; anything that makes an existing input rejected, an existing output disappear, or an existing file unreadable is breaking. While the package is 0.x, a breaking change requires: a deprecation note in the README + CHANGELOG, a migration path (code that reads the old shape, or a documented manual fix), and a **minor** version bump called out as breaking. From 1.0 on, breaking = major bump.
 
 ## 1. CLI commands, flags and exit codes (`packages/cezar/src/index.ts`)
 
-- **Bins:** `cezar` and `cez` (both in `package.json` `bin`). Removing either alias is breaking.
-- **Commands:** bare invocation = `serve` (cockpit); `cezar run "<task>"`; `cezar init`.
-- **`cezar projects` subcommands:** `list` (the default), `add`, `remove`/`rm`, `tag`. `tag <id> [<tag>…]` replaces a project's grouping tags wholesale; naming none clears them.
+- **Bins:** `cezarion` and `cez` (both in `package.json` `bin`). Removing either alias is breaking. Upstream's `cezar` and `cezar-cli` bins are deliberately absent here (#23) so a global install of this clone cannot shadow the upstream tool; that is the identity split, not a regression to repair.
+- **Commands:** bare invocation = `serve` (cockpit); `cez run "<task>"`; `cez init`.
+- **`cez projects` subcommands:** `list` (the default), `add`, `remove`/`rm`, `tag`. `tag <id> [<tag>…]` replaces a project's grouping tags wholesale; naming none clears them.
 - **Flags:** `-p/--port` (default 4321, auto-picks the next free port), `--repo <dir>`, `--workflow <name>` (default `quick-task`), `--model <model>`, `--no-open`, `-h/--help`.
 - **Exit codes:** `run` exits 0 on `done` **and** `review` (spec 009 — headless runs must not hang on the review gate), 1 on `failed`/`cancelled`/unknown workflow. CI scripts depend on this.
 - **Env vars:** `CEZ_DRY_RUN`, `CEZ_AGENT_MODELS_LOCKED`, `CEZ_APPROVAL_GATE`, `CEZ_CLAUDE_PERMISSION_MODE`, `CEZ_CLAUDE_SETTING_SOURCES`, `CEZ_FOLLOWUPS`, `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS`, `CEZ_CLAUDE_BIN`, `CEZ_CODEX_BIN`, `CEZ_OPENCODE_BIN`, `CEZ_AGENT_TMPDIR`, `GITHUB_TOKEN`.
@@ -64,7 +64,7 @@ What is protected now: **the shape of each route under `/api/v1`**, the three-wa
 
 **Project-scoped mirror — `/api/v1/p/:projectId/*`** (multi-project workspace, Phase 2): every per-project route above is registered **once** and mounted **twice**, unscoped `/api/v1/<path>` and scoped `/api/v1/p/:projectId/<path>`, sharing one handler so the spellings cannot drift. The contract:
 
-- The unscoped routes stay bound to the **boot project** (the repo `cezar serve` started in) and answer **byte-identically** to `/api/v1/p/<bootId>/<path>` and `/api/v1/p/default/<path>`. That three-way parity IS the protected surface — enforced by `packages/cezar/src/server/route-parity.test.ts`, which iterates a manifest derived from the app's actual route registrations (so a newly added scoped route is parity-tested automatically, and the suite can never drift from the code).
+- The unscoped routes stay bound to the **boot project** (the repo `cez serve` started in) and answer **byte-identically** to `/api/v1/p/<bootId>/<path>` and `/api/v1/p/default/<path>`. That three-way parity IS the protected surface — enforced by `packages/cezar/src/server/route-parity.test.ts`, which iterates a manifest derived from the app's actual route registrations (so a newly added scoped route is parity-tested automatically, and the suite can never drift from the code).
 - `projectId` is validated at the route boundary before any registry or filesystem touch: the slug shape (`^[a-z0-9][a-z0-9-]{0,63}$`) or the reserved literal `default`, which always aliases the boot project. Unknown or malformed id → `404 {error}`; a registered project whose folder is gone → `409 {error}`. Both status/shape pairs are part of the contract.
 - Non-boot projects build lazily on first scoped touch (own store, own launch key, same crash recovery the boot project gets); nothing about the boot project's observable behavior changed with the mirror.
 - Workspace-level routes (`/api/v1/health`, `/api/v1/projects`, `/api/v1/providers/*`, `/api/v1/workspace/*`) are single-mount and **never** mirrored under `/api/v1/p/` — they answer for the whole workspace, so a scoped spelling would be a second surface to protect with no consumer.
@@ -93,7 +93,7 @@ Written by one version, read by the next, and hand-editable by design:
   - Additive for issue #737: optional `inputTokens`/`outputTokens` run and step counters plus optional per-step invocation/turn checkpoint fields. Historical records remain valid without them; directional aggregates appear only when every started agent step has complete checkpoints, so an unmetered or interrupted turn cannot leave a misleading partial subtotal.
   - Additive for issue #751: optional `diffStat.repointed` — written **only as `true`**, and only for a run whose worktree HEAD had been checked out onto a branch other than the task's own, where the numbers are therefore narrowed to what that run did to the branch it found. The `{adds, dels, files}` numeric shape is unchanged and the key is absent on every other record, so a consumer that ignores it reads exactly the pre-#751 shape. What *did* change for those runs is the **values**: a review or QA task that used to report the reviewed branch's whole diff now reports only its own. The values move once more in the follow-up fix: the anchor is the freshest base ref rather than a stale local one, and a repointed worktree is measured against the branch as the run found it rather than against `HEAD` alone — so runs that reported `+0 −0` for committed work now report it. Historical records keep their old numbers until the run's next turn-end — there is deliberately no backfill, because recomputing a finished run's stat would require a worktree that may already be reclaimed.
 - **`runs.json` → `queuedMessages`** (#472) — optional array of `{ id, text, images?, createdAt }` on `RunRecord`: prompt messages stacked onto a run while it waits for a free agent slot. Absent reads as an empty stack, so pre-#472 files parse unchanged. Folded into `{{task}}` at dequeue by `hydrateQueuedInput`, which is deliberately READ-ONLY: it never writes the folded prompt back to `task`, or every restart would re-append the stack and compound without bound. Like `task`, `text` is deliberately **not** scrubbed by `redactPatch` — it is replayed into the prompt verbatim, so redacting it would corrupt the run.
-- **`runs/<id>.ndjson`** — append-only event log, one JSON object per line with `seq`, `ts`, `type`, free extra keys. Readers skip bad lines. Never rewrite, reorder or re-number an existing file; event `type` strings are part of the format (GUI replay + `cezar run` console rendering).
+- **`runs/<id>.ndjson`** — append-only event log, one JSON object per line with `seq`, `ts`, `type`, free extra keys. Readers skip bad lines. Never rewrite, reorder or re-number an existing file; event `type` strings are part of the format (GUI replay + `cez run` console rendering).
 - **`runs/<id>.handoff.md`**, **`runs/<id>-images/`** — Markdown journal and screenshots; deleted with the run.
 - **`ui-state.json`** — GUI prefs; schema is `.passthrough()` so unknown keys survive round-trips. Keep it that way — never strip keys you don't know.
 - **`config.json`** — user-owned (`packages/cezar/src/config.ts`): missing/invalid degrades to defaults; the `PUT /api/config` handler merges into the raw file so user keys survive and defaults are never materialized. Renaming a key (`skillsRepos`, `maxParallel`, `defaultRunner`, `modelsLocked`, `plannerModel`, `baseBranch`) or changing a default is breaking; accept the old key as an alias during migration. `modelsLocked` is additive and optional: only `true` makes native per-runner model settings authoritative, while absence/`false` preserves the normal model selectors. (Since the multi-project workspace, the per-repo `maxParallel`/`memoryLimitMb` keys are still parsed and written but no longer drive enforcement — the workspace `resources` do, seeded from these keys once by migration 001; sections 2 and 9.)
@@ -107,7 +107,7 @@ Breaking: any change that makes an existing file unparseable, silently discarded
 
 Users commit these files (`.ai/cezar/workflows/*.yaml`) and share them across repos — the compact `skills:` form exists specifically to be portable. Protected shape: `name`, `description?`, and `steps` XOR `skills`; per step `id`, `name?`, agent fields (`prompt`, `skill`, `model`, `runner`, `allowedTools`, `bashAllowlist`) XOR check fields (`command`, `onFail: {retry, max}`); the `{{task}}` token; `onFail.retry` referencing an earlier step; the built-in `quick-task` name.
 
-Breaking: renaming a key, tightening a refinement so previously valid files fail to load, changing `{{task}}` substitution, changing `onFail` semantics (retry target, `max` default of 2), or removing a `runner` value. Note the loader already degrades per file (bad files are reported in `issues` and skipped, `cezar run` prints `! skipped …`) — but "your existing workflow is now skipped" is still a break. Required path: accept the old spelling alongside the new, and have `POST /api/workflows` keep writing the most portable form.
+Breaking: renaming a key, tightening a refinement so previously valid files fail to load, changing `{{task}}` substitution, changing `onFail` semantics (retry target, `max` default of 2), or removing a `runner` value. Note the loader already degrades per file (bad files are reported in `issues` and skipped, `cez run` prints `! skipped …`) — but "your existing workflow is now skipped" is still a break. Required path: accept the old spelling alongside the new, and have `POST /api/workflows` keep writing the most portable form.
 
 ## 5. Skills Markdown format (`packages/cezar/src/skills.ts`)
 
@@ -119,7 +119,7 @@ The Manage-skills opt-out (`importedSkills` in the global `~/.cezar/ui-state.jso
 
 ## 6. npm package surface (`package.json`)
 
-- Name `@open-mercato/cezar` (plus the `cezar-cli` npx alias documented in the README); `bin` entries `cezar` + `cez`; published `files`: `dist`, `packages/cezar/web/dist`, `packages/web/public/open-mercato.svg`, `scripts`, `README.md`; `engines.node >= 20`; `"type": "module"`.
+- Name `@wjarka/cezarion` (plus the unscoped `cezarion` npx alias documented in the README); `bin` entries `cezarion` + `cez`; published `files`: `dist`, `packages/cezar/web/dist`, `packages/web/public/open-mercato.svg`, `scripts`, `README.md`; `engines.node >= 20`; `"type": "module"`.
 - There is **no** `exports`/library API — the package is CLI-only. Keep it that way deliberately: adding one creates a new compatibility surface; if it happens, this document gains a section first.
 - `dist/index.js` must remain the bin entry, and `web/` must stay resolvable relative to `dist/server` (`resolveWebDir` walks `../../web`; the built cockpit lives at `packages/cezar/web/dist`).
 - The tarball MUST contain the built UI (`packages/cezar/web/dist/index.html` + hashed `packages/cezar/web/dist/assets/*`) — `npm run check:pack` (`packages/cezar/scripts/check-pack.mjs`, run as the last leg of `npm run build`, hence by `prepublishOnly`) enforces this; do not remove it from the build chain.
@@ -128,7 +128,7 @@ Breaking: dropping a bin alias, raising `engines.node`, removing `packages/cezar
 
 ## 7. Agent event protocol (`packages/cezar/src/core/agent-runner.ts`, `packages/cezar/src/core/ui-events.ts`)
 
-The normalized streams every runner emits — persisted to `runs/<id>.ndjson` and replayed by both the cockpit and `cezar run`'s console. Two layers ship together and both are contracts; `AGENT_PROTOCOL.md` is the full spec.
+The normalized streams every runner emits — persisted to `runs/<id>.ndjson` and replayed by both the cockpit and `cez run`'s console. Two layers ship together and both are contracts; `AGENT_PROTOCOL.md` is the full spec.
 
 - **v1 `AgentEvent`** (`agent-runner.ts`) — the flat stream. Its `type` strings (`text`, `tool-call`, `tool-result`, `image`, `token-usage`, `cost`, `session`, `turn-end`, `note`, `done`, `error`) are part of the on-disk NDJSON format and of the console renderer. Old recordings must keep replaying forever, so a v1 type is never removed or renamed.
 - **v2 `UiEvent`** (`ui-events.ts`) — the normalized item-lifecycle protocol, emitted **alongside** v1 (never replacing it; a mixed v1+v2 NDJSON file is valid by design). Its dotted `type` discriminators (`session.started`, `session.ended`, `session.error`, `turn.started`, `turn.completed`, `item.started`, `item.delta`, `item.updated`, `item.completed`, `plan.updated`, `usage.updated`, `image`, `ask.requested`, plus the reserved `permission.requested` / `permission.resolved`), the `UiItem` kinds (`message`/`reasoning`/`tool`), and the enum vocabularies (`ToolStatus`, `ToolKind`, `StopReason`, `PlanStatus`) are the wire shape the cockpit renders and the golden fixtures pin. `ask.requested` (#473, AskUser) is emitted by the RunManager off the portable `CEZ:ASK` turn-end marker; Codex also emits the same additive event through its native `requestUserInput` bridge (#565). It is not a mapper parity capability.
@@ -199,14 +199,14 @@ rule in section 1, taken on the repo owner's explicit instruction rather than si
 ## Single-project workspace mode — opt-in narrowing, 2026-07-21
 
 `CEZ_SINGLE_PROJECT=1` deliberately narrows the multi-project workspace to the repository passed
-to `cezar serve`. Activation is strict: only the exact string `1` enables the mode; `true`, `yes`,
+to `cez serve`. Activation is strict: only the exact string `1` enables the mode; `true`, `yes`,
 an empty value, and an unset variable all preserve the default multi-project behavior.
 
 - **Intentionally narrowed under the flag**: `GET /api/health` and `GET /api/projects` expose only
   the launch project; `POST /api/projects`, `POST /api/projects/checkout`,
   `PATCH /api/projects/:projectId`, `DELETE /api/projects/:projectId`, and
   `GET /api/fs/browse` answer `409` before side effects.
-  The equivalent `cezar projects add` and `cezar projects remove` commands refuse with exit code 1.
+  The equivalent `cez projects add` and `cez projects remove` commands refuse with exit code 1.
   The cockpit consequently omits cross-project navigation, add-project controls, the global
   Projects settings section, and the New Task project picker.
 - **Unchanged by default**: without the exact opt-in, every section 2 route, response, CLI command,

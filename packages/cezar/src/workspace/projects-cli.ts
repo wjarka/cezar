@@ -32,10 +32,10 @@ const defaultIo: ProjectsCommandIo = {
 };
 
 const USAGE = `usage:
-  cezar projects [list]        list the registered projects
-  cezar projects add [<dir>]   register a folder (default: --repo, else cwd)
-  cezar projects remove <id>   drop a registry entry (the repo is untouched)
-  cezar projects tag <id> [<tag>…]
+  cez projects [list]          list the registered projects
+  cez projects add [<dir>]     register a folder (default: --repo, else cwd)
+  cez projects remove <id>     drop a registry entry (the repo is untouched)
+  cez projects tag <id> [<tag>…]
                                set the grouping tags of a project (none clears them)
 
   add/remove/tag are unavailable when CEZ_SINGLE_PROJECT=1`;
@@ -109,7 +109,7 @@ async function listCommand(
       : await listProjects();
   if (projects.length === 0) {
     io.log('\n  no projects registered yet');
-    io.log('  start the cockpit in a repo (npx cezar) or add one: cezar projects add <dir>\n');
+    io.log('  start the cockpit in a repo (npx cezarion) or add one: cez projects add <dir>\n');
     return 0;
   }
   const idWidth = Math.max(...projects.map((p) => p.id.length));

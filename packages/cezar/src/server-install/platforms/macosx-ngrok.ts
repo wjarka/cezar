@@ -191,7 +191,7 @@ const ngrokStep: InstallStep = {
 /* ── autostart: run cezar itself as a launchd agent ─────────────────── */
 
 const CEZAR_PLIST_LABEL = 'ai.cezar.cockpit';
-const OFFICIAL_CLI_PKG = 'cezar-cli';
+const OFFICIAL_CLI_PKG = 'cezarion';
 const cezarPlistPath = (): string => join(homedir(), 'Library', 'LaunchAgents', `${CEZAR_PLIST_LABEL}.plist`);
 
 /** Resolve the argv array for the cezar launchd agent, mirroring how the CLI was launched. */
@@ -204,7 +204,7 @@ async function resolveCezarArgv(ctx: InstallContext): Promise<string[]> {
   if (/[/\\]_npx[/\\]/.test(pkgRoot)) return [npxPath, '--yes', OFFICIAL_CLI_PKG];
   if (ctx.dryRun || existsSync(entry)) return [node, entry];
 
-  const out = (await ctx.runner.capture('bash', ['-lc', `command -v ${OFFICIAL_CLI_PKG} || command -v cezar`])).stdout.trim();
+  const out = (await ctx.runner.capture('bash', ['-lc', `command -v ${OFFICIAL_CLI_PKG} || command -v cez`])).stdout.trim();
   const globalBin = out.split('\n').map((s) => s.trim()).filter(Boolean).pop();
   if (globalBin) return [node, globalBin];
 

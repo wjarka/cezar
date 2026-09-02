@@ -18,7 +18,7 @@ those shrink with every family that is.
 
 ```ts
 import { createCezarClient } from '@open-mercato/cezar-api-client'
-import type { AppType } from '@open-mercato/cezar/app-type'
+import type { AppType } from '@wjarka/cezarion/app-type'
 
 const cez = createCezarClient<AppType>({ baseUrl: 'http://127.0.0.1:4321' })
 

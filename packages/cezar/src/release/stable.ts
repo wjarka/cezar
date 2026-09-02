@@ -9,7 +9,7 @@
  *  Two decisions live here so they stay unit-testable and side-effect-free: the next stable
  *  version for a given bump, and the pin style the release set is stamped with. Crucially,
  *  stable releases use a **caret** range — the opposite of the snapshot stamper's exact pin —
- *  so a stable `cezar-cli` picks up compatible patch releases of the implementation package.
+ *  so a stable `cezarion` picks up compatible patch releases of the implementation package.
  */
 
 import { stampManifestSet, type ReleaseManifests as ReleaseManifestSet } from './manifests.ts';
@@ -55,7 +55,7 @@ export type { ManifestLike, ReleaseManifests } from './manifests.ts';
 /** Stamp the release set to a stable version.
  *
  *  Mirror of `stampSnapshotManifests`, differing in exactly one decision: intra-release
- *  dependencies get a **caret** range (`^0.1.6`), not an exact pin. A stable `cezar-cli` should
+ *  dependencies get a **caret** range (`^0.1.6`), not an exact pin. A stable `cezarion` should
  *  follow compatible releases of the implementation package, and a stable service should follow
  *  compatible releases of the api-client; a snapshot must pin the one exact build it was cut
  *  from. Everything else — which manifests exist, which sections carry the pin, what the alias

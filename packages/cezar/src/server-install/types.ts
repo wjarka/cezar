@@ -269,7 +269,7 @@ export interface PlatformStrategy {
   steps(ctx: InstallContext): InstallStep[];
   /**
    * Reload the running cockpit to pick up a new cezar version (a fresh local
-   * build or a newly published `cezar-cli`) — the standardized `server-deploy`
+   * build or a newly published `cezarion`) — the standardized `server-deploy`
    * entry point. Typically: restart the service + re-verify. Throw `StepAborted`
    * to report a failed deploy.
    */

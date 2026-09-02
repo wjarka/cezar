@@ -56,7 +56,7 @@ export interface ReleaseManifests {
   apiClient: ManifestLike;
   /** The published service + CLI. */
   cezar: ManifestLike;
-  /** The unscoped bin alias, so `npx cezar-cli` works. */
+  /** The unscoped bin alias, so `npx cezarion` works. */
   alias: ManifestLike;
 }
 

@@ -15,27 +15,27 @@
   ],
   "scripts": {
     "build": "npm run build:server && npm run build:web && npm run check:pack",
-    "build:server": "npm run build -w @open-mercato/cezar",
+    "build:server": "npm run build -w @wjarka/cezarion",
     "build:web": "npm run build -w @open-mercato/cezar-web",
-    "check:pack": "npm run check:pack -w @open-mercato/cezar",
+    "check:pack": "npm run check:pack -w @wjarka/cezarion",
     "dev": "node scripts/dev.mjs",
-    "dev:server": "npm run dev -w @open-mercato/cezar --",
+    "dev:server": "npm run dev -w @wjarka/cezarion --",
     "dev:web": "npm run dev -w @open-mercato/cezar-web --",
-    "install-as-command": "npm run install-as-command -w @open-mercato/cezar",
-    "install-as-command:global": "npm run install-as-command:global -w @open-mercato/cezar",
-    "uninstall-as-command": "npm run uninstall-as-command -w @open-mercato/cezar",
-    "server-install": "npm run server-install -w @open-mercato/cezar --",
-    "server-deploy": "npm run server-deploy -w @open-mercato/cezar --",
-    "server-uninstall": "npm run server-uninstall -w @open-mercato/cezar --",
+    "install-as-command": "npm run install-as-command -w @wjarka/cezarion",
+    "install-as-command:global": "npm run install-as-command:global -w @wjarka/cezarion",
+    "uninstall-as-command": "npm run uninstall-as-command -w @wjarka/cezarion",
+    "server-install": "npm run server-install -w @wjarka/cezarion --",
+    "server-deploy": "npm run server-deploy -w @wjarka/cezarion --",
+    "server-uninstall": "npm run server-uninstall -w @wjarka/cezarion --",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:unit": "npm run test:unit -w @open-mercato/cezar && node --test .github/scripts/*.test.cjs",
-    "test:package": "npm run test:package -w @open-mercato/cezar",
+    "test:unit": "npm run test:unit -w @wjarka/cezarion && node --test .github/scripts/*.test.cjs",
+    "test:package": "npm run test:package -w @wjarka/cezarion",
     "test:e2e": "sh .ai/scripts/e2e.sh",
     "pretypecheck": "npm run build:server",
     "typecheck": "npm run typecheck:contract && npm run typecheck:client && npm run typecheck:server && npm run typecheck:web",
     "typecheck:client": "npm run typecheck -w @open-mercato/cezar-api-client",
-    "typecheck:server": "npm run typecheck -w @open-mercato/cezar",
+    "typecheck:server": "npm run typecheck -w @wjarka/cezarion",
     "typecheck:web": "npm run typecheck -w @open-mercato/cezar-web",
     "typecheck:contract": "npm run typecheck -w @open-mercato/cezar-contract"
   },
@@ -46,6 +46,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/open-mercato/cezar"
+    "url": "https://github.com/wjarka/cezar"
   }
 }

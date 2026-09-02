@@ -57,9 +57,9 @@ async function makeFixture(version = '0.1.5'): Promise<string> {
   );
   await writeFile(join(root, 'packages', 'cezar', 'index.js'), 'export {};\n');
 
-  await mkdir(join(root, 'alias-cezar'));
+  await mkdir(join(root, 'alias-cezarion'));
   await writeFile(
-    join(root, 'alias-cezar', 'package.json'),
+    join(root, 'alias-cezarion', 'package.json'),
     `${JSON.stringify(
       {
         name: 'fake-alias',
@@ -71,7 +71,7 @@ async function makeFixture(version = '0.1.5'): Promise<string> {
       2,
     )}\n`,
   );
-  await writeFile(join(root, 'alias-cezar', 'bin.js'), '#!/usr/bin/env node\n');
+  await writeFile(join(root, 'alias-cezarion', 'bin.js'), '#!/usr/bin/env node\n');
   return root;
 }
 
@@ -114,7 +114,7 @@ test('a patch bump stamps every manifest, keeps the caret ranges, and emits the 
 
     const clientPkg = await readPkg(root, 'packages', 'api-client');
     const cezarPkg = await readPkg(root, 'packages', 'cezar');
-    const aliasPkg = await readPkg(root, 'alias-cezar');
+    const aliasPkg = await readPkg(root, 'alias-cezarion');
     assert.equal(clientPkg.version, '0.1.6');
     assert.equal(cezarPkg.version, '0.1.6');
     assert.equal(aliasPkg.version, '0.1.6');

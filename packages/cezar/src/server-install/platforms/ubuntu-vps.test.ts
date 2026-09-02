@@ -264,25 +264,25 @@ describe('serviceExecStart', () => {
   });
 
   it('uses the official npx alias when launched from the ephemeral _npx cache', () => {
-    expect(serviceExecStart({ ...base, pkgRoot: '/home/u/.npm/_npx/abcd/node_modules/cezar-cli', entryExists: false }))
-      .toBe('/n/npx --yes cezar-cli');
+    expect(serviceExecStart({ ...base, pkgRoot: '/home/u/.npm/_npx/abcd/node_modules/cezarion', entryExists: false }))
+      .toBe('/n/npx --yes cezarion');
   });
 
   it('falls back to a resolved global bin when the entry is missing', () => {
-    expect(serviceExecStart({ ...base, pkgRoot: '/pkg', entryExists: false, globalBin: '/usr/bin/cezar-cli' }))
-      .toBe('/n/node /usr/bin/cezar-cli');
+    expect(serviceExecStart({ ...base, pkgRoot: '/pkg', entryExists: false, globalBin: '/usr/bin/cezarion' }))
+      .toBe('/n/node /usr/bin/cezarion');
   });
 });
 
 describe('isNpxExecStart (#696)', () => {
   it('is true for the unpinned npx launch form', () => {
-    expect(isNpxExecStart('/home/u/.nvm/versions/node/v24/bin/npx --yes cezar-cli serve --no-open --port 4321')).toBe(true);
+    expect(isNpxExecStart('/home/u/.nvm/versions/node/v24/bin/npx --yes cezarion serve --no-open --port 4321')).toBe(true);
   });
   it('is false for a checkout (<node> dist/index.js) unit', () => {
     expect(isNpxExecStart('/usr/bin/node /home/cezar/cezar/dist/index.js serve --no-open --port 4321')).toBe(false);
   });
   it('is false for a global bin unit (no npx)', () => {
-    expect(isNpxExecStart('/usr/bin/node /usr/bin/cezar-cli serve --no-open --port 4321')).toBe(false);
+    expect(isNpxExecStart('/usr/bin/node /usr/bin/cezarion serve --no-open --port 4321')).toBe(false);
   });
 });
 
@@ -299,9 +299,9 @@ describe('ubuntu-vps redeploy npx-cache refresh (#696)', () => {
   }
 
   it('reports clearing the npx cache before restarting an npx-based unit', async () => {
-    const { ctx, infos } = recordingCtx('/n/npx --yes cezar-cli serve --no-open --port 4321');
+    const { ctx, infos } = recordingCtx('/n/npx --yes cezarion serve --no-open --port 4321');
     await ubuntuVps.redeploy!(ctx);
-    expect(infos.some((message) => /clear cached cezar-cli|npx refetch/i.test(message))).toBe(true);
+    expect(infos.some((message) => /clear cached cezarion|npx refetch/i.test(message))).toBe(true);
   });
 
   it('does NOT touch the npx cache for a checkout-based unit', async () => {
@@ -310,16 +310,16 @@ describe('ubuntu-vps redeploy npx-cache refresh (#696)', () => {
     expect(infos.some((message) => /npx/i.test(message))).toBe(false);
   });
 
-  it('really deletes only the cezar-cli entries in the npx cache', () => {
+  it('really deletes only the cezarion entries in the npx cache', () => {
     const cache = mkdtempSync(join(tmpdir(), 'cez-npx-'));
     const prev = process.env.npm_config_cache;
     process.env.npm_config_cache = cache;
     try {
-      mkdirSync(join(cache, '_npx', 'aaaa', 'node_modules', 'cezar-cli'), { recursive: true });
-      writeFileSync(join(cache, '_npx', 'aaaa', 'node_modules', 'cezar-cli', 'x'), '');
+      mkdirSync(join(cache, '_npx', 'aaaa', 'node_modules', 'cezarion'), { recursive: true });
+      writeFileSync(join(cache, '_npx', 'aaaa', 'node_modules', 'cezarion', 'x'), '');
       mkdirSync(join(cache, '_npx', 'bbbb', 'node_modules', 'prettier'), { recursive: true });
 
-      refreshNpxCacheForRedeploy(ctxWith({}), '/n/npx --yes cezar-cli serve --port 4321');
+      refreshNpxCacheForRedeploy(ctxWith({}), '/n/npx --yes cezarion serve --port 4321');
 
       expect(existsSync(join(cache, '_npx', 'aaaa'))).toBe(false);
       expect(existsSync(join(cache, '_npx', 'bbbb'))).toBe(true);
@@ -337,7 +337,7 @@ describe('ubuntu-vps redeploy npx-cache refresh (#696)', () => {
     writeFileSync(join(cache, '_npx'), 'not a directory');
     const capture = vi.fn(async () => ({
       code: 0,
-      stdout: '/n/npx --yes cezar-cli serve --port 4321',
+      stdout: '/n/npx --yes cezarion serve --port 4321',
       stderr: '',
     }));
     const interactive = vi.fn(async () => 0);

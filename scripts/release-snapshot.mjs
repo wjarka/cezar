@@ -53,7 +53,7 @@ const dirs = {
   contract: path.join(repoRoot, 'packages/contract'),
   apiClient: path.join(repoRoot, 'packages/api-client'),
   cezar: path.join(repoRoot, 'packages/cezar'),
-  alias: path.join(repoRoot, 'alias-cezar'),
+  alias: path.join(repoRoot, 'alias-cezarion'),
 };
 
 const readManifest = (dir) => JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));

@@ -156,7 +156,7 @@ describe('cezar projects CLI', () => {
       expect(await run('remove', 'nope')).toBe(1);
       expect(io.err.join('\n')).toContain('unknown project: nope');
       expect(await run('remove')).toBe(1);
-      expect(io.err.join('\n')).toContain('cezar projects remove <id>');
+      expect(io.err.join('\n')).toContain('cez projects remove <id>');
     });
   });
 
@@ -234,7 +234,7 @@ describe('cezar projects CLI', () => {
   it('exits 1 with the usage block on an unknown subcommand', async () => {
     expect(await run('frobnicate')).toBe(1);
     expect(io.err.join('\n')).toContain('unknown projects subcommand: frobnicate');
-    expect(io.err.join('\n')).toContain('cezar projects [list]');
+    expect(io.err.join('\n')).toContain('cez projects [list]');
   });
 
   it('documents the single-project mutation restriction in usage output', async () => {
@@ -285,7 +285,7 @@ describe('cezar projects CLI', () => {
 
     it('needs an id', async () => {
       expect(await run('tag')).toBe(1);
-      expect(io.err.join('\n')).toContain('cezar projects [list]');
+      expect(io.err.join('\n')).toContain('cez projects [list]');
     });
   });
 });

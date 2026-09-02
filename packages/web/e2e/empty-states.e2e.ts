@@ -12,7 +12,7 @@ import { AgentBrowser, bootProjectId, cezarCli, fixtureServeEnv } from './agent-
  * and the 404 with its way back home.
  *
  * Same per-spec boot pattern as quick-list.e2e.ts, but over an EMPTY repo: a fresh data dir with
- * no `runs.json` is not a contrived fixture — it is exactly what `npx cezar-cli` serves on first
+ * no `runs.json` is not a contrived fixture — it is exactly what `npx cezarion` serves on first
  * run, and the empty state is the first thing a new user sees. The store answers `[]`, honestly.
  */
 

@@ -38,14 +38,14 @@ import { WorkspaceSemaphore } from './workspace/semaphore.ts';
 const HELP = `cezar — local cockpit for AI agent tasks in your repo
 
 Usage:
-  cezar                     start the cockpit (server + GUI) for the current repo
-  cezar run "<task>"        run a task headless in the terminal
-  cezar init                scaffold .ai/cezar/ (example workflow + skill)
-  cezar projects            list the projects this cockpit serves
+  cez                       start the cockpit (server + GUI) for the current repo
+  cez run "<task>"          run a task headless in the terminal
+  cez init                  scaffold .ai/cezar/ (example workflow + skill)
+  cez projects              list the projects this cockpit serves
                             (also: projects add [<dir>] · projects remove <id>)
-  cezar server-install      interactive wizard to host cezar on a server
-  cezar server-deploy       redeploy a new version (reload the service) + verify
-  cezar server-uninstall    reverse a server-install
+  cez server-install        interactive wizard to host cezar on a server
+  cez server-deploy         redeploy a new version (reload the service) + verify
+  cez server-uninstall      reverse a server-install
 
 Options:
   -p, --port <n>              cockpit port (default 4321; server-install: this
@@ -355,7 +355,7 @@ async function runCommand(
   model: string | undefined,
 ): Promise<void> {
   if (!task) {
-    console.error('usage: cezar run "<task>" [--workflow name] [--model model]');
+    console.error('usage: cez run "<task>" [--workflow name] [--model model]');
     process.exitCode = 1;
     return;
   }
@@ -440,9 +440,9 @@ async function runCommand(
   store.flush();
   const record = store.getRun(run.id);
   if (final === 'review') {
-    console.log(`\n  changes ready for review on branch ${record?.branch ?? '?'} — inspect them in the cockpit: npx cezar`);
+    console.log(`\n  changes ready for review on branch ${record?.branch ?? '?'} — inspect them in the cockpit: npx cezarion`);
   }
-  console.log(`\nrun ${final} — ${record?.tokensUsed ?? 0} tokens — details in the cockpit: npx cezar`);
+  console.log(`\nrun ${final} — ${record?.tokensUsed ?? 0} tokens — details in the cockpit: npx cezarion`);
   process.exitCode = final === 'done' || final === 'review' ? 0 : 1;
 }
 
@@ -584,12 +584,12 @@ async function serverCommand(
           ? await runDeploy(strategy, runOpts)
           : await runUninstall(strategy, runOpts);
     if (mode === 'install' && result.status === 'complete') {
-      console.log(`\n  cezar server-install (${label}) complete.`);
-      console.log(`  Redeploy a new version any time with: cezar server-deploy --platform ${chosen}${domainFlag}\n`);
+      console.log(`\n  cez server-install (${label}) complete.`);
+      console.log(`  Redeploy a new version any time with: cez server-deploy --platform ${chosen}${domainFlag}\n`);
     } else if (mode === 'deploy' && result.status === 'complete') {
-      console.log(`\n  cezar server-deploy (${label}) complete — the service was reloaded and verified.\n`);
+      console.log(`\n  cez server-deploy (${label}) complete — the service was reloaded and verified.\n`);
     } else if (mode === 'uninstall' && result.status === 'complete') {
-      console.log(`\n  cezar server-uninstall (${label}) complete — the changes it made were reversed.\n`);
+      console.log(`\n  cez server-uninstall (${label}) complete — the changes it made were reversed.\n`);
     }
     // complete + cancelled (resumable) exit 0; failed exits 1.
     process.exitCode = result.status === 'failed' ? 1 : 0;
@@ -648,7 +648,7 @@ description: House rules the agent should follow in this repo.
     }
   }
   ensureDataGitignore(repoRoot);
-  console.log('\nDone. Start the cockpit with: npx cezar');
+  console.log('\nDone. Start the cockpit with: npx cezarion');
 }
 
 // ---- helpers -----------------------------------------------------------------
@@ -701,9 +701,9 @@ function readOwnName(): string {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')) as { name?: string };
-    return pkg.name ?? '@open-mercato/cezar';
+    return pkg.name ?? '@wjarka/cezarion';
   } catch {
-    return '@open-mercato/cezar';
+    return '@wjarka/cezarion';
   }
 }
 

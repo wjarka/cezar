@@ -598,7 +598,7 @@ WantedBy=${installTarget}
 }
 
 /** Our official npm package/alias — what `npx <this>` reinstalls the CLI as. */
-const OFFICIAL_CLI_PKG = 'cezar-cli';
+const OFFICIAL_CLI_PKG = 'cezarion';
 
 /**
  * Decide the absolute ExecStart command for the service, mirroring how the
@@ -606,9 +606,9 @@ const OFFICIAL_CLI_PKG = 'cezar-cli';
  *
  *  - Launched via `npx <alias>` (the CLI package lives in npm's ephemeral
  *    `_npx` cache, which gets cleaned): the service can't point there, so it
- *    reinstalls-and-runs the same way — `<abs npx> --yes cezar-cli` (bare `npx`
+ *    reinstalls-and-runs the same way — `<abs npx> --yes cezarion` (bare `npx`
  *    would 203/EXEC, so npx is made absolute).
- *  - A stable install (a checkout, or a global `cezar-cli`/`cezar`): run the
+ *  - A stable install (a checkout, or a global `cezarion`/`cez`): run the
  *    CLI's own built entry `<node> <pkg>/dist/index.js`, or a resolved global
  *    bin. Absolute node + absolute script → systemd never resolves off PATH.
  */
@@ -643,7 +643,7 @@ async function resolveExecStart(ctx: InstallContext): Promise<string> {
 
   let globalBin: string | undefined;
   if (!existsSync(entry) && !/[/\\]_npx[/\\]/.test(pkgRoot)) {
-    const out = (await ctx.runner.capture('bash', ['-lc', `command -v ${OFFICIAL_CLI_PKG} || command -v cezar`])).stdout.trim();
+    const out = (await ctx.runner.capture('bash', ['-lc', `command -v ${OFFICIAL_CLI_PKG} || command -v cez`])).stdout.trim();
     globalBin = out.split('\n').map((s) => s.trim()).filter(Boolean).pop();
     if (!globalBin) {
       ctx.ui.warn(
@@ -671,11 +671,11 @@ export function isNpxExecStart(execStart: string): boolean {
 }
 
 /**
- * The npx trap (#696): `npx --yes cezar-cli` caches the resolved package under
+ * The npx trap (#696): `npx --yes cezarion` caches the resolved package under
  * `~/.npm/_npx/<hash>` and reuses it forever — a service restart re-execs the
  * SAME cached build, so `server-deploy` would never actually update. Before
  * restarting an npx-based unit we delete the cache entries that contain
- * `cezar-cli`, so the next launch re-resolves `latest`. Surgical: other npx
+ * `cezarion`, so the next launch re-resolves `latest`. Surgical: other npx
  * packages' caches are left untouched. A checkout / global-bin unit has no
  * npx cache to clear and is skipped (its restart picks up the new build/global
  * directly).
@@ -961,7 +961,7 @@ const identityStep: InstallStep = {
       if (!https) {
         ctx.ui.warn(
           'This cockpit is HTTP-only (no domain/SSL configured). To serve it over HTTPS with this same auth, ' +
-            're-run: cezar server-install --platform ubuntu-vps --reconfigure ssl',
+            're-run: cez server-install --platform ubuntu-vps --reconfigure ssl',
         );
       }
       return { artifacts: [] };
@@ -1019,7 +1019,7 @@ export const ubuntuVps: PlatformStrategy = {
           `Port 80 is already served by "${holder}" on this host.\n` +
             `cezar's ubuntu-vps install wants :80/:443 for its own nginx, so these will collide.\n\n` +
             `If that is a reverse proxy you rely on (Dokploy/Traefik, Coolify, Caddy), re-run with:\n` +
-            `  cezar server-install --platform ubuntu-vps --external-proxy${ctx.state.domain ? ` --domain ${ctx.state.domain}` : ''} [--bind-host 172.17.0.1]\n` +
+            `  cez server-install --platform ubuntu-vps --external-proxy${ctx.state.domain ? ` --domain ${ctx.state.domain}` : ''} [--bind-host 172.17.0.1]\n` +
             `That installs the cezar service only and lets your proxy front it.`,
         );
       }
@@ -1037,7 +1037,7 @@ export const ubuntuVps: PlatformStrategy = {
   async redeploy(ctx: InstallContext) {
     const UNIT_NAME = unitName(ctx);
     // Restart the systemd service so it picks up the new cezar (a fresh local
-    // build the unit runs from, or a newly published cezar-cli via npx), then
+    // build the unit runs from, or a newly published cezarion via npx), then
     // re-run the same end-to-end verify install uses.
     const svc = (ctx.state.steps['autostart']?.created?.artifacts ?? []).find((a) => a.type === 'service');
     // No recorded artifact (older record, or the step was check()-satisfied):
@@ -1049,7 +1049,7 @@ export const ubuntuVps: PlatformStrategy = {
       svc?.scope === 'user' || svc?.scope === 'system' ? svc.scope : userUnitExists ? 'user' : 'system';
     // #696: an npx-launched unit re-execs its cached build on restart, so a
     // deploy that doesn't invalidate the npx cache never actually updates.
-    // Clear the cezar-cli cache first (read the live ExecStart to know the
+    // Clear the cezarion cache first (read the live ExecStart to know the
     // launch form); a checkout / global unit is left alone.
     refreshNpxCacheForRedeploy(ctx, await readExecStart(ctx, scope, UNIT_NAME));
     if (ctx.dryRun) {
