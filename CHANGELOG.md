@@ -1,6 +1,12 @@
 # Unreleased
 
 ## ✨ Features
+- ✨ **Claude permission mode is an env var, not a wrapper.** Agent runs still default to
+  `--permission-mode dontAsk`. Set `CEZ_CLAUDE_PERMISSION_MODE` to `dontAsk`, `acceptEdits`, or
+  `bypass` (`bypass` drops `--permission-mode` and passes `--dangerously-skip-permissions`).
+  `CEZ_APPROVAL_GATE=1` still maps to `acceptEdits` when the new var is unset. Optional
+  `CEZ_CLAUDE_SETTING_SOURCES` adds `--setting-sources` on agent runs only. Provider verification
+  (`claude auth status --json` / `claude auth login`) is never given these flags. (#7)
 - ✨ **Continue a task on another agent account, not just another agent.** The thread's Continue
   carried a runner pill that could switch `claude → codex` but never offered the second Claude
   login the new-task composer has offered since accounts landed — so "finish this one on my other

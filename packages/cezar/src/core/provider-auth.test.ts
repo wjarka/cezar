@@ -35,6 +35,8 @@ const originalEnv = {
   CEZ_CODEX_BIN: process.env.CEZ_CODEX_BIN,
   CEZ_OPENCODE_BIN: process.env.CEZ_OPENCODE_BIN,
   CEZ_PI_BIN: process.env.CEZ_PI_BIN,
+  CEZ_CLAUDE_PERMISSION_MODE: process.env.CEZ_CLAUDE_PERMISSION_MODE,
+  CEZ_CLAUDE_SETTING_SOURCES: process.env.CEZ_CLAUDE_SETTING_SOURCES,
 };
 
 beforeEach(() => {
@@ -44,6 +46,8 @@ beforeEach(() => {
   delete process.env.CEZ_CODEX_BIN;
   delete process.env.CEZ_OPENCODE_BIN;
   delete process.env.CEZ_PI_BIN;
+  delete process.env.CEZ_CLAUDE_PERMISSION_MODE;
+  delete process.env.CEZ_CLAUDE_SETTING_SOURCES;
 });
 
 afterEach(() => {
@@ -878,6 +882,17 @@ describe('ProviderAuthService', () => {
     await service.status();
     expect(runCommand).toHaveBeenCalledWith('/tools/pi custom', ['--list-models'], 10_000);
     expect(service.loginCommand('pi')).toBe("'/tools/pi custom' /login");
+  });
+
+  it('leaves Claude verification argv unchanged when permission env vars are set', async () => {
+    process.env.CEZ_CLAUDE_PERMISSION_MODE = 'bypass';
+    process.env.CEZ_CLAUDE_SETTING_SOURCES = 'user,project,local';
+    const runCommand = runner();
+    const service = new ProviderAuthService({ runCommand, platform: 'linux' });
+
+    await service.status();
+    expect(runCommand).toHaveBeenCalledWith('claude', ['auth', 'status', '--json'], 10_000);
+    expect(service.loginCommand('claude')).toBe("'claude' auth login");
   });
 
   it('uses the documented CEZ_CLAUDE_BIN override for both probe and login commands', async () => {

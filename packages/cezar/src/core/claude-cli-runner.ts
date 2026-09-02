@@ -340,7 +340,10 @@ export class ClaudeCliRunner implements AgentRunner {
  * from stdin; `--output-format stream-json --verbose` gives per-event NDJSON;
  * `--permission-mode dontAsk` keeps headless runs non-interactive: tools in
  * `--allowedTools` proceed and everything else is denied instead of prompting.
- * `CEZ_APPROVAL_GATE=1` opts back into Claude's approval UI (#435).
+ * `CEZ_CLAUDE_PERMISSION_MODE` selects `dontAsk` / `acceptEdits` / `bypass`
+ * (`bypass` emits `--dangerously-skip-permissions` instead). Unset or unknown
+ * keeps today's path: `CEZ_APPROVAL_GATE=1` opts into `acceptEdits` (#435).
+ * `CEZ_CLAUDE_SETTING_SOURCES` optionally adds `--setting-sources`.
  */
 export function buildClaudeArgs(
   spec: AgentRunSpec,
@@ -352,9 +355,22 @@ export function buildClaudeArgs(
     '--output-format',
     'stream-json',
     '--verbose',
-    '--permission-mode',
-    env.CEZ_APPROVAL_GATE === '1' ? 'acceptEdits' : 'dontAsk',
   ];
+  const permissionMode = env.CEZ_CLAUDE_PERMISSION_MODE;
+  if (permissionMode === 'bypass') {
+    args.push('--dangerously-skip-permissions');
+  } else if (permissionMode === 'dontAsk' || permissionMode === 'acceptEdits') {
+    args.push('--permission-mode', permissionMode);
+  } else {
+    args.push(
+      '--permission-mode',
+      env.CEZ_APPROVAL_GATE === '1' ? 'acceptEdits' : 'dontAsk',
+    );
+  }
+  const settingSources = env.CEZ_CLAUDE_SETTING_SOURCES;
+  if (settingSources) {
+    args.push('--setting-sources', settingSources);
+  }
   if (spec.systemPrompt) {
     args.push('--append-system-prompt', spec.systemPrompt);
   }
