@@ -3,12 +3,13 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiError, connectProvider, setProviderEnabled } from '@/api/client'
 import {
+  invalidateRunnerModels,
   useProviderStatus,
   useRefreshProviderStatus,
   useRetryProviderAuth,
   workspaceQueryKeys,
 } from '@/api/queries'
-import type { ProviderId, ProviderStatusResponse } from '@open-mercato/cezar-api-client'
+import { runnerDiscoversModels, type ProviderId, type ProviderStatusResponse } from '@open-mercato/cezar-api-client'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -144,7 +145,7 @@ export function ProviderSettings() {
     // which would now land in `connectProvider`'s optional `profileId` and aim this card's Connect
     // at an account id that is not one. The Providers card is always the DISCOVERED account.
     mutationFn: (provider: ProviderId) => connectProvider(provider),
-    onSuccess: async (result) => {
+    onSuccess: async (result, provider) => {
       setManual(null)
       toast(
         result.opened
@@ -152,6 +153,7 @@ export function ProviderSettings() {
           : 'Provider is already connected.',
       )
       await queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.providerStatus })
+      if (runnerDiscoversModels(provider)) await invalidateRunnerModels(queryClient, provider)
     },
     onError: (error: Error, provider) => {
       if (error instanceof ApiError && error.command) {

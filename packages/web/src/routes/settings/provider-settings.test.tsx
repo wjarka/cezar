@@ -217,6 +217,21 @@ describe('ProviderSettings', () => {
     )
   })
 
+  it('Connect invalidates the host model catalog for that runner', async () => {
+    serve()
+    const client = renderSettings()
+    client.setQueryData(workspaceQueryKeys.models('codex'), {
+      runner: 'codex',
+      models: [],
+      source: 'unavailable',
+      stale: false,
+    })
+    fireEvent.click(await within(card('codex')).findByRole('button', { name: 'Connect' }))
+    await waitFor(() =>
+      expect(client.getQueryState(workspaceQueryKeys.models('codex'))?.isInvalidated).toBe(true),
+    )
+  })
+
   it('shows and copies the server command exactly when terminal launch is unavailable', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })

@@ -247,6 +247,13 @@ export const workspaceQueryKeys = {
     [...workspaceQueryKeys.fsBrowseRoot, path, showHidden] as const,
 }
 
+/** Drop the cockpit's host model catalog so the next picker open rediscovers. Omit `runner` to bust every discovery runner (Providers "Check again"). */
+export function invalidateRunnerModels(queryClient: QueryClient, runner?: string) {
+  return queryClient.invalidateQueries({
+    queryKey: runner === undefined ? (['workspace', 'models'] as const) : workspaceQueryKeys.models(runner),
+  })
+}
+
 /**
  * One runner's host-discovered catalog, cached per runner (#794 — this used to be hard-wired to
  * Codex, which is why OpenCode had nothing but stale presets to show).
@@ -320,10 +327,13 @@ export function useRefreshProviderStatus() {
   return useMutation({
     mutationFn: () => getProviderStatus(true),
     onMutate: () => queryClient.getQueryData<ProviderStatusResponse>(workspaceQueryKeys.providerStatus),
-    onSuccess: (result, _variables, requestStart) => queryClient.setQueryData<ProviderStatusResponse>(
-      workspaceQueryKeys.providerStatus,
-      (cached) => mergeProviderStatusResponse(requestStart, cached, result),
-    ),
+    onSuccess: (result, _variables, requestStart) => {
+      queryClient.setQueryData<ProviderStatusResponse>(
+        workspaceQueryKeys.providerStatus,
+        (cached) => mergeProviderStatusResponse(requestStart, cached, result),
+      )
+      void invalidateRunnerModels(queryClient)
+    },
   })
 }
 
@@ -341,6 +351,7 @@ export function useRetryProviderAuth() {
     onSuccess: (result, variables, requestStart) => {
       queryClient.setQueryData<ProviderStatusResponse>(workspaceQueryKeys.providerStatus, (cached) =>
         mergeProviderStatusResponse(requestStart, cached, result, variables.authFailureId))
+      if (runnerDiscoversModels(variables.provider)) void invalidateRunnerModels(queryClient, variables.provider)
     },
   })
 }
@@ -603,10 +614,11 @@ export function useConnectAgentAccount() {
     mutationFn: ({ provider, profileId }: { provider: ProviderId; profileId?: string }) =>
       connectProvider(provider, profileId),
     retry: false,
-    onSuccess: async () => {
+    onSuccess: async (_result, { provider }) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.agentProfiles }),
         queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.providerStatus }),
+        runnerDiscoversModels(provider) ? invalidateRunnerModels(queryClient, provider) : Promise.resolve(),
       ])
     },
   })
@@ -627,6 +639,9 @@ export function useRecheckAgentAccount() {
     onSuccess: (answer, routeId) => {
       queryClient.setQueryData(workspaceQueryKeys.agentAccountStatus(routeId), answer)
       void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.agentProfiles })
+      if (runnerDiscoversModels(answer.status.provider)) {
+        void invalidateRunnerModels(queryClient, answer.status.provider)
+      }
     },
   })
 }
