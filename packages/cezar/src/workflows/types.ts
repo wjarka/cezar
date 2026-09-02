@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RUNNER_IDS } from '../core/agent-runner.ts';
+import { RUNNER_IDS, type AgentBackend, type RunnerId } from '../core/agent-runner.ts';
 
 /**
  * A workflow is an ordered list of steps. Two step kinds:
@@ -192,6 +192,28 @@ export function stepsIssue(steps: WorkflowStepDef[]): string | null {
 
 /** Tools an agent step gets when the workflow doesn't say otherwise. */
 export const DEFAULT_ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash'];
+
+/** Extra tools unioned onto the default when a step does not set allowedTools. */
+export const HARNESS_EXTRA_TOOLS: { readonly [K in RunnerId]: readonly string[] } = {
+  claude: [],
+  codex: [],
+  opencode: [],
+  pi: ['Subagent'],
+};
+
+export function allowedToolsForStep(
+  step: { allowedTools?: string[] } | undefined,
+  backend: AgentBackend | undefined,
+): string[] {
+  if (step?.allowedTools) return [...step.allowedTools];
+  const extras = extrasFor(backend);
+  return extras.length === 0 ? [...DEFAULT_ALLOWED_TOOLS] : [...DEFAULT_ALLOWED_TOOLS, ...extras];
+}
+
+function extrasFor(backend: AgentBackend | undefined): readonly string[] {
+  if (backend === undefined || backend === 'claude-cli') return HARNESS_EXTRA_TOOLS.claude;
+  return HARNESS_EXTRA_TOOLS[backend];
+}
 
 /** The zero-config workflow: one agent step that just does the task. */
 export const QUICK_TASK_WORKFLOW: WorkflowDef = {
