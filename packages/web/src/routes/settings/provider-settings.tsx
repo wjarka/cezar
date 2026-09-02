@@ -153,7 +153,7 @@ export function ProviderSettings() {
           : 'Provider is already connected.',
       )
       await queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.providerStatus })
-      if (runnerDiscoversModels(provider)) await invalidateRunnerModels(queryClient, provider)
+      if (runnerDiscoversModels(provider)) await invalidateRunnerModels(queryClient, provider, 'none')
     },
     onError: (error: Error, provider) => {
       if (error instanceof ApiError && error.command) {

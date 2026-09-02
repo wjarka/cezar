@@ -248,9 +248,14 @@ export const workspaceQueryKeys = {
 }
 
 /** Drop the cockpit's host model catalog so the next picker open rediscovers. Omit `runner` to bust every discovery runner (Providers "Check again"). */
-export function invalidateRunnerModels(queryClient: QueryClient, runner?: string) {
+export function invalidateRunnerModels(
+  queryClient: QueryClient,
+  runner?: string,
+  refetchType: 'active' | 'none' = 'active',
+) {
   return queryClient.invalidateQueries({
     queryKey: runner === undefined ? (['workspace', 'models'] as const) : workspaceQueryKeys.models(runner),
+    refetchType,
   })
 }
 
@@ -618,7 +623,7 @@ export function useConnectAgentAccount() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.agentProfiles }),
         queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.providerStatus }),
-        runnerDiscoversModels(provider) ? invalidateRunnerModels(queryClient, provider) : Promise.resolve(),
+        runnerDiscoversModels(provider) ? invalidateRunnerModels(queryClient, provider, 'none') : Promise.resolve(),
       ])
     },
   })
