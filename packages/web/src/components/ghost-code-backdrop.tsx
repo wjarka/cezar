@@ -52,7 +52,7 @@ const SNIPPETS: GhostLine[][] = [
   ],
   // the run log answering it
   [
-    [p('$ cezar run '), s('--worktree --autonomous')],
+    [p('$ cez run '), s('--worktree --autonomous')],
     [s('✓'), p(' worktree ready · base '), s('main')],
     [s('✓'), p(' agent started')],
     [c('… editing src/routes/new-task.tsx')],

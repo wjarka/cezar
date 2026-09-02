@@ -8,7 +8,7 @@
 // `latest` dist-tag, and it never runs from a push — a human dispatches it and
 // picks the bump (patch/minor/major, or `existing` to publish the version
 // already committed). It stamps every manifest in the release set (intra-release
-// dependencies kept as caret ranges so a stable cezar-cli follows compatible impl
+// dependencies kept as caret ranges so a stable cezarion follows compatible impl
 // releases), then publishes them in DEPENDENCY ORDER — api-client, then the
 // service, then the alias — always with `--tag latest`. Publishing a dependent
 // before its dependency would briefly advertise a version that is not on the
@@ -51,7 +51,7 @@ const dirs = {
   contract: path.join(repoRoot, 'packages/contract'),
   apiClient: path.join(repoRoot, 'packages/api-client'),
   cezar: path.join(repoRoot, 'packages/cezar'),
-  alias: path.join(repoRoot, 'alias-cezar'),
+  alias: path.join(repoRoot, 'alias-cezarion'),
 };
 
 const readManifest = (dir) => JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));

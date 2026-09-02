@@ -58,9 +58,9 @@ async function makeFixture(): Promise<string> {
   );
   await writeFile(join(root, 'packages', 'cezar', 'index.js'), 'export {};\n');
 
-  await mkdir(join(root, 'alias-cezar'));
+  await mkdir(join(root, 'alias-cezarion'));
   await writeFile(
-    join(root, 'alias-cezar', 'package.json'),
+    join(root, 'alias-cezarion', 'package.json'),
     `${JSON.stringify(
       {
         name: 'fake-alias',
@@ -72,7 +72,7 @@ async function makeFixture(): Promise<string> {
       2,
     )}\n`,
   );
-  await writeFile(join(root, 'alias-cezar', 'bin.js'), '#!/usr/bin/env node\n');
+  await writeFile(join(root, 'alias-cezarion', 'bin.js'), '#!/usr/bin/env node\n');
   return root;
 }
 
@@ -122,7 +122,7 @@ test('dry-run publish stamps every manifest, pins each sibling exact, and emits 
 
     const clientPkg = await readPkg(root, 'packages', 'api-client');
     const cezarPkg = await readPkg(root, 'packages', 'cezar');
-    const aliasPkg = await readPkg(root, 'alias-cezar');
+    const aliasPkg = await readPkg(root, 'alias-cezarion');
     assert.equal(clientPkg.version, '0.9.9-pr77.5');
     assert.equal(cezarPkg.version, '0.9.9-pr77.5');
     assert.equal(aliasPkg.version, '0.9.9-pr77.5');
@@ -188,7 +188,7 @@ test('the nightly channel stamps a dated version and publishes under the nightly
       ['--dry-run'],
     );
 
-    const aliasPkg = await readPkg(root, 'alias-cezar');
+    const aliasPkg = await readPkg(root, 'alias-cezarion');
     assert.equal(aliasPkg.version, '0.9.9-nightly.20260813.12');
     assert.deepEqual(aliasPkg.dependencies, { '@scope/fake-root': '0.9.9-nightly.20260813.12' });
     const output = await readFile(join(root, 'github-output.txt'), 'utf8');
@@ -221,7 +221,7 @@ test('a nightly re-run stamps the attempt onto the version so it cannot collide'
       ['--dry-run'],
     );
 
-    const aliasPkg = await readPkg(root, 'alias-cezar');
+    const aliasPkg = await readPkg(root, 'alias-cezarion');
     assert.equal(aliasPkg.version, '0.9.9-nightly.20260813.12.2');
     assert.deepEqual(aliasPkg.dependencies, { '@scope/fake-root': '0.9.9-nightly.20260813.12.2' });
   } finally {

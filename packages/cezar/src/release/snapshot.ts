@@ -9,7 +9,7 @@
  *
  *  Deliberately name-agnostic: package names come from the checked-out manifests
  *  at call time, never from constants — so the `@pat-lewczuk/cezar` →
- *  `@open-mercato/cezar` rename (PR #501) lands independently of this pipeline.
+ *  `@wjarka/cezarion` rename (#23) lands independently of this pipeline.
  */
 
 import { stampManifestSet, type ReleaseManifests as ReleaseManifestSet } from './manifests.ts';
@@ -63,7 +63,7 @@ export function computeSnapshot(ctx: SnapshotContext): SnapshotPlan | null {
     ? `.${ctx.runAttempt}`
     : '';
   // A nightly is named after the day it was cut — `0.1.5-nightly.20260813.126` —
-  // so `npm view cezar-cli versions` reads as a calendar and a user can tell at a
+  // so `npm view cezarion versions` reads as a calendar and a user can tell at a
   // glance how old their build is. The run number still trails the date, because a
   // manual re-cut on the same day must not collide with the scheduled one. Both are
   // plain numeric semver identifiers, so the ordering stays chronological.

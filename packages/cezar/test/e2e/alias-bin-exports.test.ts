@@ -11,17 +11,17 @@ const execFile = promisify(execFileCallback);
 // This file lives at packages/cezar/test/e2e; the alias package it guards is at the REPO
 // root, because it is published alongside this package rather than from inside it.
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const aliasBin = join(repoRoot, 'alias-cezar', 'bin.js');
+const aliasBin = join(repoRoot, 'alias-cezarion', 'bin.js');
 const packageManifest = join(repoRoot, 'packages', 'cezar', 'package.json');
 
 /**
- * The `cezar-cli` alias must import this package through a specifier its `exports` map
+ * The `cezarion` alias must import this package through a specifier its `exports` map
  * actually exposes.
  *
  * 0.9.3 shipped an alias whose `bin.js` did `import('@open-mercato/cezar/dist/index.js')`
  * while this manifest exported only `.`, `./app-type` and `./package.json`. Once a package
  * declares `exports`, Node serves ONLY the listed subpaths and hard-blocks the rest — so
- * every `npx cezar-cli` died with ERR_PACKAGE_PATH_NOT_EXPORTED against a file that was
+ * every `npx cezarion` died with ERR_PACKAGE_PATH_NOT_EXPORTED against a file that was
  * sitting right there in the tarball (#851).
  *
  * Nothing else in the gate could see it. The manifest's own `bin` entries name the same
@@ -36,27 +36,27 @@ const packageManifest = join(repoRoot, 'packages', 'cezar', 'package.json');
  * checkout with no `dist/`.
  */
 
-/** Every `@open-mercato/cezar` specifier the alias entry point imports. */
+/** Every `@wjarka/cezarion` specifier the alias entry point imports. */
 async function aliasSpecifiers(): Promise<string[]> {
   const source = await readFile(aliasBin, 'utf8');
-  const pattern = /['"](@open-mercato\/cezar(?:\/[^'"]*)?)['"]/g;
+  const pattern = /['"](@wjarka\/cezarion(?:\/[^'"]*)?)['"]/g;
   return [...source.matchAll(pattern)].map((match) => match[1] as string);
 }
 
-test('the cezar-cli alias imports a specifier the exports map exposes', async () => {
+test('the cezarion alias imports a specifier the exports map exposes', async () => {
   const specifiers = await aliasSpecifiers();
   // A computed specifier would slip past the regex; fail loudly rather than vacuously pass.
   assert.ok(
     specifiers.length > 0,
-    `${aliasBin} names no literal @open-mercato/cezar specifier — this guard can no longer see what the alias imports`,
+    `${aliasBin} names no literal @wjarka/cezarion specifier — this guard can no longer see what the alias imports`,
   );
 
   const root = await mkdtemp(join(tmpdir(), 'cezar-alias-exports-'));
   try {
     // A consumer that has only the published manifest installed — the exports gate reads
-    // nothing else, so this reproduces a real `npx cezar-cli` resolution exactly.
+    // nothing else, so this reproduces a real `npx cezarion` resolution exactly.
     await writeFile(join(root, 'package.json'), '{"private":true,"type":"module"}\n', 'utf8');
-    const installed = join(root, 'node_modules', '@open-mercato', 'cezar');
+    const installed = join(root, 'node_modules', '@wjarka', 'cezarion');
     await mkdir(installed, { recursive: true });
     await copyFile(packageManifest, join(installed, 'package.json'));
 
@@ -67,8 +67,8 @@ test('the cezar-cli alias imports a specifier the exports map exposes', async ()
         { cwd: root },
       ).catch((error: Error & { stderr?: string }) => {
         assert.fail(
-          `the alias imports '${specifier}', which the @open-mercato/cezar exports map does not expose — ` +
-            `npx cezar-cli would fail for every user (#851): ${error.stderr?.trim() ?? error.message}`,
+          `the alias imports '${specifier}', which the @wjarka/cezarion exports map does not expose — ` +
+            `npx cezarion would fail for every user (#851): ${error.stderr?.trim() ?? error.message}`,
         );
       });
 

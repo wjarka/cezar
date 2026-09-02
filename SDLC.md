@@ -59,7 +59,7 @@ Priority is how urgent the work is; risk is how dangerous the change is to ship.
 
 When no priority label is set, infer one:
 
-- `priority-extreme` — the published CLI is broken for users (`npx cezar` fails), data loss in `.ai/cezar/`, or an active security incident.
+- `priority-extreme` — the published CLI is broken for users (`npx cezarion` fails), data loss in `.ai/cezar/`, or an active security incident.
 - `priority-high` — security hardening or a release-blocking regression.
 - `priority-medium` — ordinary bug fixes and net-new features (also the default reading of unset).
 - `priority-low` — cosmetic, docs-only, dependency bumps, follow-up cleanup.

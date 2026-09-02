@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // `npm run install-as-command` (+ `:global` and the `uninstall-as-command`
-// counterpart): build this checkout and put a global `cezar`/`cez`/`cezar-cli`
+// counterpart): build this checkout and put a global `cezarion`/`cez`
 // command on PATH pointing at THIS working tree — the local-dev equivalent of
-// `npx cezar-cli`, with no publish and no `npx` download. Spec 013.
+// `npx cezarion`, with no publish and no `npx` download. Spec 013.
 //
 //   --mode link       build → `npm link`             (live; `npm run build` refreshes it)
 //   --mode global     build → `npm install --global .` (self-contained snapshot)
-//   --mode uninstall                  `npm rm --global @open-mercato/cezar`
+//   --mode uninstall                  `npm rm --global @wjarka/cezarion`
 //   --no-build        skip the build (relink an already-built dist)
 //
 // The install decisions live in the unit-tested src/install-as-command.ts
@@ -69,7 +69,7 @@ const plannerPath = path.join(distDir, 'install-as-command.js');
 if (existsSync(plannerPath)) {
   planner = await import(pathToFileURL(plannerPath).href);
 }
-const PACKAGE_NAME = planner?.PACKAGE_NAME ?? '@open-mercato/cezar';
+const PACKAGE_NAME = planner?.PACKAGE_NAME ?? '@wjarka/cezarion';
 const steps = planner
   ? planner.planInstall({ mode, build }).steps
   : [{ args: ['rm', '--global', PACKAGE_NAME], label: `remove global ${PACKAGE_NAME}` }];
@@ -93,7 +93,7 @@ for (const step of steps) {
 }
 
 if (mode === 'uninstall') {
-  console.log('install-as-command: global cezar / cez / cezar-cli removed.');
+  console.log('install-as-command: global cezarion / cez removed.');
   process.exit(0);
 }
 
@@ -114,7 +114,7 @@ if (planner && prefix) {
     console.log(`\ninstall-as-command: done, but only ${present.length}/${planner.BIN_NAMES.length} shims found in ${binDir}`);
   }
   console.log(`  Ensure this is on your PATH:\n    ${binDir}`);
-  console.log('  Then, from any repo:  cezar --help');
+  console.log('  Then, from any repo:  cez --help');
 } else {
-  console.log('\ninstall-as-command: done. Ensure your npm global bin dir is on PATH, then run `cezar --help`.');
+  console.log('\ninstall-as-command: done. Ensure your npm global bin dir is on PATH, then run `cez --help`.');
 }

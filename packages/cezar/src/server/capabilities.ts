@@ -3,7 +3,7 @@
  * says isn't there, and the matching endpoints refuse as defense in depth.
  *
  * `localHandoff` (cockpit-ui redesign spec §"Deployment modes — local vs
- * hosted"): the default deployment is `npx cezar-cli` on localhost, where
+ * hosted"): the default deployment is `npx cezarion` on localhost, where
  * handing a session off to a local terminal/editor makes sense. On a VPS/remote
  * box it doesn't: `CEZ_REMOTE=1` (or binding a non-loopback host) switches to
  * hosted mode — the UI hides every local-machine affordance and the open-in-*

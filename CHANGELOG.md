@@ -88,6 +88,17 @@
   repo (#526). It now reads the project registry's own per-project repository — the same source
   All tasks uses — and falls back to health only for the boot project. (#901)
 
+## 🚀 CI/CD & Infrastructure
+- 🚀 **This clone publishes as `cezarion`, not as upstream's `cezar`.** The install line is
+  `npx cezarion`; the implementation ships as `@wjarka/cezarion`. Installed bins are `cezarion`
+  and `cez` — upstream's `cezar` and `cezar-cli` bins are deliberately gone, so a global install
+  of this clone can never shadow the upstream tool, and this repo can never write to a package it
+  does not own. Everything inside the repo keeps the name it had: `.ai/cezar/`, `~/.cezar/`, the
+  `CEZ_*` env vars, the `cez` command and the cockpit are untouched, and the private workspace
+  packages (`@open-mercato/cezar-contract`, `-api-client`, `-web`) keep their names because they
+  never reach npm. `docs/publishing.md` records the identity and the owner's one-time npm token
+  setup. (#23)
+
 # 0.10.0 (2026-08-14)
 
 ## Highlights

@@ -95,7 +95,7 @@ export function BookmarkletPanel({ skills }: { skills: readonly Skill[] }) {
       <h2 className="text-base font-semibold">Run from GitHub</h2>
       <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
         Drag a button below to your browser&apos;s bookmarks bar. On any GitHub PR or issue, click it
-        to open this cockpit directly. The cockpit must be running: <span className="font-mono">npx cezar</span>.
+        to open this cockpit directly. The cockpit must be running: <span className="font-mono">npx cezarion</span>.
       </p>
 
       <label className="mt-4 flex items-center gap-2 text-[13px] font-medium">

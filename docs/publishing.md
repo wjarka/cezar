@@ -1,5 +1,22 @@
 # Publishing — stable releases and npm previews
 
+## Package identity
+
+This repository publishes as **`cezarion`** — chosen for this clone in #23, and
+confirmed free on the registry before the first release. Two names reach npm:
+
+| What a user types | Package | Why |
+|---|---|---|
+| `npx cezarion` | `cezarion` (unscoped alias, `alias-cezarion/`) | the install line every doc quotes |
+| `npm i @wjarka/cezarion` | `@wjarka/cezarion` (`packages/cezar`) | the implementation, under a personal scope |
+
+Installed bins are **`cezarion`** and **`cez`**. Upstream's `cezar` and
+`cezar-cli` bins are deliberately **not** published here, so a global install of
+this clone can never shadow the upstream tool. The product keeps its name inside
+the repo — `.ai/cezar/`, `~/.cezar/`, `CEZ_*` and the `cez` command are
+unchanged — and the private workspace packages keep their `@open-mercato/*`
+names because they never reach npm.
+
 How cezar reaches npm. Two paths, deliberately separate
 (spec: `.ai/specs/2026-07-18-npm-preview-publish.md`, issue #482):
 
@@ -11,7 +28,7 @@ How cezar reaches npm. Two paths, deliberately separate
   [`ci.yml`](../.github/workflows/ci.yml) publishes a snapshot of every package
   after a fully green `verify` run — on `develop` pushes and same-repo PRs only.
 - **Nightlies** are **clock-driven**: [`nightly.yml`](../.github/workflows/nightly.yml)
-  cuts `main`'s tip every night under the `nightly` dist-tag, so `npx cezar-cli@nightly`
+  cuts `main`'s tip every night under the `nightly` dist-tag, so `npx cezarion@nightly`
   is always the trunk. Also runnable on demand from the Actions tab.
 
 Three packages are in the release, always at the same version; two of them ship:
@@ -19,8 +36,8 @@ Three packages are in the release, always at the same version; two of them ship:
 | Package | Ships? | What it is |
 |---|---|---|
 | `@open-mercato/cezar-api-client` | **no — `private`** | the typed client and shared contract types (`packages/api-client`) |
-| `@open-mercato/cezar` | yes | the service + CLI, ships the built cockpit (`packages/cezar`) |
-| `cezar-cli` | yes | the unscoped bin alias, so `npx cezar-cli` works (`alias-cezar`) |
+| `@wjarka/cezarion` | yes | the service + CLI, ships the built cockpit (`packages/cezar`) |
+| `cezarion` | yes | the unscoped bin alias, so `npx cezarion` works (`alias-cezarion`) |
 
 That table is also the **publish order**, and it is load-bearing: each package
 depends on the one above it, so publishing a dependent first would briefly
@@ -35,7 +52,7 @@ until its surface stops moving: it still carries the hand-written DTOs, which
 shrink family by family as routes are converted, so publishing now would
 advertise a contract that changes materially every release. Publishing it is one
 line — delete `"private": true` from its manifest; the release code reads npm's
-own flag and needs no change. Note the token requirement in step 3 below before
+own flag and needs no change. Note the token requirement in step 2 below before
 doing so.
 
 ## Stable releases
@@ -63,8 +80,8 @@ verifies `main` (typecheck, unit suites, build, packaged-CLI e2e — the same ga
 a release runs) and publishes it under the `nightly` dist-tag:
 
 ```bash
-npx cezar-cli@nightly              # whatever is on main as of last night
-npx cezar-cli@0.1.5-nightly.20260813.126   # that exact night, forever
+npx cezarion@nightly              # whatever is on main as of last night
+npx cezarion@0.1.5-nightly.20260813.126   # that exact night, forever
 ```
 
 The version is named after the **day it was cut** — `<base>-nightly.<YYYYMMDD>.<run_number>`
@@ -88,16 +105,16 @@ become the default install.
 
 | Event | Version (example) | dist-tag | Install |
 |---|---|---|---|
-| same-repo PR, CI green | `0.1.5-pr482.123` | `pr-482` | `npx cezar-cli@0.1.5-pr482.123` |
-| push to `develop` | `0.1.5-develop.124` | `develop` | `npx cezar-cli@develop` |
-| nightly cut of `main` | `0.1.5-nightly.20260813.126` | `nightly` | `npx cezar-cli@nightly` |
+| same-repo PR, CI green | `0.1.5-pr482.123` | `pr-482` | `npx cezarion@0.1.5-pr482.123` |
+| push to `develop` | `0.1.5-develop.124` | `develop` | `npx cezarion@develop` |
+| nightly cut of `main` | `0.1.5-nightly.20260813.126` | `nightly` | `npx cezarion@nightly` |
 
 A push to `main` publishes **nothing**: the trunk reaches npm through the nightly
 above, or through an owner-driven stable release — never straight off a merge.
 
 Version scheme: `<base>-<channel>.<run_number>`, with `.<run_attempt>` appended
 on re-runs so no publish ever collides. Prerelease versions under explicit
-dist-tags are invisible to a plain `npx cezar-cli`, which keeps resolving
+dist-tags are invisible to a plain `npx cezarion`, which keeps resolving
 `latest`.
 
 Every package publishes in lockstep, in dependency order, with each intra-release
@@ -136,43 +153,62 @@ below is done.
 
 ## One-time admin setup
 
-On **npmjs.com** (as an owner of the npm org and of the `cezar-cli` package):
+On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
 
-1. Verify the org exists and your user is an **Owner**.
-2. Give the org control of the unscoped alias (unscoped packages attach to
-   orgs via teams) — run as the current `cezar-cli` owner:
-   `npm access grant read-write <org>:developers cezar-cli`.
-3. Create a **granular access token**: *Read and write*; packages and scopes =
-   the org **scope** (`@open-mercato/*`) rather than a hand-picked package
-   list, **plus** the `cezar-cli` package; set an expiry per your policy (CI
-   fails loudly with `E401`/`E404` when it lapses).
-   - Selecting the scope instead of individual packages is load-bearing: a
-     token limited to *selected packages* cannot **create** a new one, and npm
-     reports that as a misleading `E404 Not Found - PUT <name>` rather than a
-     `403`. Every package added to the release set fails its first publish
-     until the token can create packages in the scope —
-     `@open-mercato/cezar-api-client` was the first to hit this.
-4. For every package: Settings → *Publishing access* → **"Require two-factor
-   authentication or an automation or granular access token"** (CI publishes
-   with the token; humans still need 2FA).
+1. Neither package exists yet, so nothing has to be transferred — the **first
+   publish creates both**. A user scope belongs to the npm account of the same
+   name, so `@wjarka/*` needs no org and no team setup.
+2. Create a **granular access token**: *Read and write*, covering the
+   `@wjarka` scope **and** able to create the unscoped `cezarion` package; set
+   an expiry per your policy (CI fails loudly with `E401`/`E404`/`EOTP` when
+   it is wrong or lapses).
+   - "Able to create" is the load-bearing part: a token limited to *selected
+     packages* cannot **create** a new one, and npm reports that as a
+     misleading `E404 Not Found - PUT <name>` rather than a `403`. Since both
+     packages are new, grant the token **all packages**, or publish
+     `cezarion` once by hand first and then narrow the token.
+   - The same trap catches every package later added to the release set —
+     `@open-mercato/cezar-api-client` was the first to hit it upstream.
+   - **Tick "Bypass two-factor authentication (2FA)"** under the token's
+     *Security settings*. A granular token is NOT exempt from 2FA by default —
+     the bypass is an explicit opt-in checkbox, and without it an account that
+     enforces 2FA on writes makes the registry answer `npm error code EOTP`
+     (one-time password required). It aborts *after* uploading the file list,
+     so it reads like a mid-publish glitch rather than a credential problem.
+     Hit live on #30: a token with read-write on all packages and the bypass
+     box left unchecked failed with `EOTP` on `@wjarka/cezarion`. Correct
+     scope is not sufficient; this box is the other half.
+   - Do **not** answer an `EOTP` by relaxing the account's two-factor mode to
+     *authorization only*. That weakens every package the account owns to fix
+     one CI job; set the bypass on the token instead, which is scoped to that
+     token alone. A classic *Automation* token bypasses 2FA by design and is
+     the other valid answer, at the cost of no expiry and account-wide write.
+3. After the first publish, for every package: Settings → *Publishing access*
+   → **"Require two-factor authentication or an automation or granular access
+   token"** (CI publishes with the token; humans still need 2FA).
 
 On **GitHub** (this repository):
 
-5. Settings → Secrets and variables → Actions → new repository secret
-   **`NPM_TOKEN`** with the token from step 3.
-6. Nothing else — the workflows declare their own `permissions:` blocks, so
+4. Settings → Secrets and variables → Actions → new repository secret
+   **`NPM_TOKEN`** with the token from step 2. This repository has no `NPM_TOKEN`
+   today, so this is a create, not a rotation — every release and snapshot run so
+   far has reported `NPM_TOKEN is not configured — forcing --dry-run` and stayed
+   green. If a fork ever does inherit an upstream token, **replace** that value
+   rather than adding a second secret: the old token cannot write `@wjarka/*`, and
+   the release would fail with a misleading `E404`.
+5. Nothing else — the workflows declare their own `permissions:` blocks, so
    repo-level Actions defaults can stay read-only.
 
-After the first stable publish under a new package name (post-rename only):
-
-7. Publish a final forwarding patch of the old scoped package and deprecate
-   it: `npm deprecate <old-name> "moved to <new-name> — npx cezar-cli still works"`.
+Nothing is deprecated on the upstream side: this clone publishes under names npm
+has never seen, so `@open-mercato/cezar` and `cezar-cli` keep belonging to
+upstream and are never written to from here.
 
 ## Verifying a preview
 
 - The PR's sticky comment (or the job's step summary for branch pushes) has
-  the exact command — e.g. `npx cezar-cli@0.1.5-pr482.123`.
-- `npm view cezar-cli dist-tags` shows every active channel.
+  the exact command — e.g. `npx cezarion@0.1.5-pr482.123`.
+- `npm view cezarion dist-tags` and `npm view @wjarka/cezarion dist-tags` show
+  every active channel on both published names.
 - Server flows accept pinned previews too:
-  `npx cezar-cli@<version> server-deploy --platform <id>`
+  `npx cezarion@<version> server-deploy --platform <id>`
   (see [Remote access](server-install/README.md)).

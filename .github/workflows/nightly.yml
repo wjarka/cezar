@@ -4,7 +4,7 @@ name: Nightly
 #
 # A third channel alongside the two in docs/publishing.md: previews follow a PR or
 # `develop`, stable `latest` is owner-driven and manual — neither gives you "what is
-# on the trunk right now" without hunting for a run number. `npx cezar-cli@nightly`
+# on the trunk right now" without hunting for a run number. `npx cezarion@nightly`
 # does. Like every snapshot it publishes a PRERELEASE version under an explicit
 # dist-tag, so it can never become the default install.
 on:

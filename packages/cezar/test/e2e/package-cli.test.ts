@@ -46,21 +46,20 @@ test('the release tarball installs and runs the dry-run CLI workflow', { timeout
       { cwd: consumerDir, maxBuffer: 10 * 1024 * 1024 },
     );
 
-    const packageRoot = join(consumerDir, 'node_modules', '@open-mercato', 'cezar');
+    const packageRoot = join(consumerDir, 'node_modules', '@wjarka', 'cezarion');
     const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
-      bin: { cezar: string; cez: string; 'cezar-cli': string };
+      bin: { cezarion: string; cez: string };
     };
-    assert.equal(manifest.bin.cezar, 'dist/index.js');
+    assert.equal(manifest.bin.cezarion, 'dist/index.js');
     assert.equal(manifest.bin.cez, 'dist/index.js');
-    assert.equal(manifest.bin['cezar-cli'], 'dist/index.js');
-    const cliPath = join(packageRoot, manifest.bin.cezar);
+    const cliPath = join(packageRoot, manifest.bin.cezarion);
 
     const help = await execFile(process.execPath, [cliPath, '--help'], {
       cwd: consumerDir,
       maxBuffer: 10 * 1024 * 1024,
     });
     assert.match(help.stdout, /cezar — local cockpit/);
-    assert.match(help.stdout, /cezar run "<task>"/);
+    assert.match(help.stdout, /cez run "<task>"/);
 
     const fixtureRepo = join(root, 'fixture-repo');
     await mkdir(fixtureRepo);
@@ -173,7 +172,7 @@ if (args.join(' ') === 'auth status --json') {
       'headless runtime rejection must persist provider recovery guidance',
     );
 
-    // `cezar projects` (step 5.2) reads the same registry with no server
+    // `cez projects` (step 5.2) reads the same registry with no server
     // running — the ssh-into-the-box view of Settings → Projects.
     const projects = await execFile(process.execPath, [cliPath, 'projects'], {
       cwd: consumerDir,
@@ -187,7 +186,7 @@ if (args.join(' ') === 'auth status --json') {
     // server-install / server-uninstall dry-run round-trip. A separate CEZ_HOME
     // isolates ~/.cezar/server.json from the project-registry fixture above;
     // CEZ_DRY_RUN performs no real sudo.
-    assert.match(help.stdout, /cezar server-install/);
+    assert.match(help.stdout, /cez server-install/);
     const serverHome = join(root, 'server-home');
     const serverEnv = { ...process.env, CEZ_DRY_RUN: '1', CEZ_HOME: serverHome };
     const serverExec = { cwd: consumerDir, env: serverEnv, timeout: 60_000, maxBuffer: 10 * 1024 * 1024 } as const;

@@ -2,7 +2,7 @@
 # when a PR closes, best-effort remove its moving `pr-<N>` dist-tag from both
 # packages. The snapshot *versions* stay on the registry — npm allows unpublish
 # only within 72 hours and forbids it with dependents, and untagged prerelease
-# versions are inert (never resolved by a plain `npx cezar-cli`).
+# versions are inert (never resolved by a plain `npx cezarion`).
 name: npm preview cleanup
 
 on:
@@ -48,7 +48,7 @@ jobs:
           # Names come from the manifests, never hardcoded, so a rename cannot orphan a tag.
           ROOT_PKG=$(node -p "require('./packages/cezar/package.json').name")
           CLIENT_PKG=$(node -p "require('./packages/api-client/package.json').name")
-          ALIAS_PKG=$(node -p "require('./alias-cezar/package.json').name")
+          ALIAS_PKG=$(node -p "require('./alias-cezarion/package.json').name")
           for pkg in "$ROOT_PKG" "$CLIENT_PKG" "$ALIAS_PKG"; do
             # Best effort: the tag may never have existed (PR predating the
             # pipeline, or closed before its first green run).

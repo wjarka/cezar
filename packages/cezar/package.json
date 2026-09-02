@@ -1,13 +1,12 @@
 {
-  "name": "@open-mercato/cezar",
+  "name": "@wjarka/cezarion",
   "version": "0.10.0",
   "description": "Local cockpit for running and tracking AI agent tasks in your repo. Uses your logged-in `claude` CLI and `gh` — zero config, zero database.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "cezar": "dist/index.js",
-    "cez": "dist/index.js",
-    "cezar-cli": "dist/index.js"
+    "cezarion": "dist/index.js",
+    "cez": "dist/index.js"
   },
   "exports": {
     ".": "./dist/index.js",
@@ -62,7 +61,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/open-mercato/cezar",
+    "url": "https://github.com/wjarka/cezar",
     "directory": "packages/cezar"
   },
   "publishConfig": {

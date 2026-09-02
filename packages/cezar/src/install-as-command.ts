@@ -1,8 +1,8 @@
 /** The pure half of `scripts/install-as-command.mjs` (spec 013).
  *
  *  `npm run install-as-command` builds this checkout and puts a global
- *  `cezar`/`cez`/`cezar-cli` command on PATH pointing at THIS working tree —
- *  the local-dev equivalent of `npx cezar-cli`, with no publish. This module
+ *  `cezarion`/`cez` command on PATH pointing at THIS working tree —
+ *  the local-dev equivalent of `npx cezarion`, with no publish. This module
  *  owns the *decisions* (which npm command runs, where the shims land) so they
  *  are unit-testable; the `.mjs` script owns the spawning and exit codes.
  *  Kept dependency-free and side-effect-free (mirrors `pack-check.ts`).
@@ -12,11 +12,12 @@ import path from 'node:path';
 
 /** Scoped package name — both install flavors register globally under it, so
  *  uninstall is a single `npm rm --global` of this name regardless of flavor. */
-export const PACKAGE_NAME = '@open-mercato/cezar';
+export const PACKAGE_NAME = '@wjarka/cezarion';
 
-/** Every bin the main package installs. `cezar-cli` is added (spec 013) so a
- *  single link / global-install exposes the same name as `npx cezar-cli`. */
-export const BIN_NAMES = ['cezar', 'cez', 'cezar-cli'] as const;
+/** Every bin the main package installs. `cezarion` matches the unscoped npm
+ *  alias, so a single link / global-install exposes the same name as
+ *  `npx cezarion`; `cez` is the short form. */
+export const BIN_NAMES = ['cezarion', 'cez'] as const;
 
 export type InstallMode = 'link' | 'global' | 'uninstall';
 
@@ -54,7 +55,7 @@ export function planInstall(opts: { mode: InstallMode; build?: boolean }): Insta
   }
 }
 
-/** Expected shim paths for all three bins under an `npm prefix -g` value.
+/** Expected shim paths for every published bin under an `npm prefix -g` value.
  *  npm drops POSIX shims in `<prefix>/bin/<name>` and Windows shims directly in
  *  `<prefix>\<name>.cmd`. `platform` is passed in (not read from `process`) so
  *  the mapping is deterministic and testable for either OS. */

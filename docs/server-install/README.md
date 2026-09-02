@@ -12,9 +12,9 @@ yourself. It's idempotent and resumable, and it ends with a real
 works behind its login.
 
 ```bash
-npx cezar-cli server-install   --platform <id>   # install
-npx cezar-cli server-deploy    --platform <id>   # redeploy a new version (reload the service)
-npx cezar-cli server-uninstall --platform <id>   # reverse it
+npx cezarion server-install   --platform <id>   # install
+npx cezarion server-deploy    --platform <id>   # redeploy a new version (reload the service)
+npx cezarion server-uninstall --platform <id>   # reverse it
 ```
 
 ## Available providers
@@ -56,9 +56,9 @@ repo: install once, then add the rest — **Settings → Projects** in the cockp
 or straight from an ssh session:
 
 ```bash
-cezar projects                     # what this host serves
-cezar projects add /srv/other-repo # register another checkout
-cezar projects remove other-repo   # registry entry only — the checkout stays
+cez projects                       # what this host serves
+cez projects add /srv/other-repo   # register another checkout
+cez projects remove other-repo     # registry entry only — the checkout stays
 ```
 
 The CLI edits the registry file directly, so it works whether or not the
@@ -72,14 +72,14 @@ already gives them separate ports, nginx sites and logins.
 
 ## Redeploying a new version
 
-`npx cezar-cli server-deploy --platform <id>` is the standardized, per-strategy way to
+`npx cezarion server-deploy --platform <id>` is the standardized, per-strategy way to
 roll out a new cezar: it restarts the service and re-verifies. See each guide's
 **Updating / redeploying** section for the checkout-vs-npx details.
 
 To test an unreleased build on a server, pin a preview version
 (see [Preview builds](../publishing.md)) — for example roll a box to a PR's
-exact snapshot with `npx cezar-cli@<version> server-deploy --platform <id>`,
-or track a branch with `npx cezar-cli@develop server-deploy --platform <id>`.
+exact snapshot with `npx cezarion@<version> server-deploy --platform <id>`,
+or track a branch with `npx cezarion@develop server-deploy --platform <id>`.
 
 ---
 

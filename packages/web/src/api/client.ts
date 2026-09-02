@@ -115,7 +115,7 @@ import {
 import type { Ok, OkJson } from '@open-mercato/cezar-api-client'
 import type { ClientResponse } from 'hono/client'
 import type { ResponseFormat } from 'hono/types'
-import type { AppType } from '@open-mercato/cezar/app-type'
+import type { AppType } from '@wjarka/cezarion/app-type'
 
 /**
  * The cockpit's client for its own HTTP API.
