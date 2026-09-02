@@ -169,17 +169,20 @@ On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
      `cezarion` once by hand first and then narrow the token.
    - The same trap catches every package later added to the release set —
      `@open-mercato/cezar-api-client` was the first to hit it upstream.
-   - **The token TYPE matters as much as its scope.** A classic *Publish*
-     token fails against an account that enforces 2FA for writes: the
-     registry answers `npm error code EOTP` (one-time password required) and
-     aborts *after* uploading the file list, so it reads like a mid-publish
-     glitch rather than a credential problem. Granular tokens and classic
-     *Automation* tokens are exempt; a classic Publish token is not. Hit live
-     on #30 with `EOTP` on `@wjarka/cezarion` before the first release, which
-     is why this step says granular.
+   - **Tick "Bypass two-factor authentication (2FA)"** under the token's
+     *Security settings*. A granular token is NOT exempt from 2FA by default —
+     the bypass is an explicit opt-in checkbox, and without it an account that
+     enforces 2FA on writes makes the registry answer `npm error code EOTP`
+     (one-time password required). It aborts *after* uploading the file list,
+     so it reads like a mid-publish glitch rather than a credential problem.
+     Hit live on #30: a token with read-write on all packages and the bypass
+     box left unchecked failed with `EOTP` on `@wjarka/cezarion`. Correct
+     scope is not sufficient; this box is the other half.
    - Do **not** answer an `EOTP` by relaxing the account's two-factor mode to
      *authorization only*. That weakens every package the account owns to fix
-     one CI job; change the token type instead.
+     one CI job; set the bypass on the token instead, which is scoped to that
+     token alone. A classic *Automation* token bypasses 2FA by design and is
+     the other valid answer, at the cost of no expiry and account-wide write.
 3. After the first publish, for every package: Settings → *Publishing access*
    → **"Require two-factor authentication or an automation or granular access
    token"** (CI publishes with the token; humans still need 2FA).
