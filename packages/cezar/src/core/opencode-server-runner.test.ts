@@ -156,16 +156,23 @@ describe('SIGTERM→SIGKILL escalation for an opencode server that survives SIGT
  * the same signal the v2 mapper already uses.
  */
 describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 }, () => {
+  interface MockServerOptions {
+    promptStatus?: number;
+    refuseSse?: boolean;
+    sseStatus?: number;
+    questionReplyStatus?: number;
+    questionReplyDelayMs?: number;
+  }
+
   /** In-process stand-in for `opencode serve`: just the endpoints the runner
    *  touches, with the test driving the SSE bus frame by frame. */
-  async function startMockServer(
-    opts: { promptStatus?: number; refuseSse?: boolean; sseStatus?: number } = {},
-  ) {
+  async function startMockServer(opts: MockServerOptions = {}) {
     const clients: ServerResponse[] = [];
     const promptPosts: string[] = [];
     const questionGets: number[] = [];
     const questionReplies: Array<{ path: string; body: unknown }> = [];
     const pendingQuestions: unknown[] = [];
+    let questionReplyStatus = opts.questionReplyStatus ?? 200;
     const server = createServer((req, res) => {
       const url = req.url ?? '';
       if (req.method === 'GET' && url.startsWith('/event')) {
@@ -209,8 +216,12 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
         }
         if (req.method === 'POST' && /^\/question\/[^/]+\/reply$/.test(url)) {
           questionReplies.push({ path: url, body: JSON.parse(body || '{}') });
-          res.writeHead(200, { 'content-type': 'application/json' });
-          res.end('{}');
+          const reply = () => {
+            res.writeHead(questionReplyStatus, { 'content-type': 'application/json' });
+            res.end('{}');
+          };
+          if (opts.questionReplyDelayMs) setTimeout(reply, opts.questionReplyDelayMs);
+          else reply();
           return;
         }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -225,6 +236,9 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       questionGets,
       questionReplies,
       pendingQuestions,
+      setQuestionReplyStatus(status: number): void {
+        questionReplyStatus = status;
+      },
       send(event: unknown): void {
         for (const c of clients) if (!c.destroyed) c.write(`data: ${JSON.stringify(event)}\n\n`);
       },
@@ -285,10 +299,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
   }
 
   async function withSession(
-    opts: {
-      promptStatus?: number;
-      refuseSse?: boolean;
-      sseStatus?: number;
+    opts: MockServerOptions & {
       onUiEvent?: (event: UiEvent) => void;
     },
     run: (h: Harness) => Promise<void>,
@@ -477,7 +488,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
   });
 
   it('maps a native question to ask.requested and sends selected answers to its reply endpoint', async () => {
-    await withSession({}, async ({ uiEvents, mock, session }) => {
+    await withSession({}, async ({ events, uiEvents, mock, session }) => {
       await waitFor(() => mock.promptPosts.length === 1);
       mock.pendingQuestions.push({ id: 'q_test', sessionID: 'ses_test' });
 
@@ -525,6 +536,11 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
         },
       ]);
       expect(mock.promptPosts).toHaveLength(1);
+
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => count(events, 'turn-end') === 1);
+      session.sendMessage([{ type: 'text', text: 'continue normally' }]);
+      await waitFor(() => mock.promptPosts.length === 2);
     });
   });
 
@@ -659,6 +675,76 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     );
   });
 
+  it('keeps and re-emits a native ask when its reply POST fails so the user can retry', async () => {
+    await withSession({ questionReplyStatus: 500 }, async ({ events, uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_retry', sessionID: 'ses_test' });
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+      await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 1);
+
+      session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+      await waitFor(() =>
+        events.some(
+          (event) =>
+            event.type === 'note' &&
+            event.message === 'opencode: question reply failed: POST /question/q_retry/reply → 500 {}',
+        ),
+      );
+      await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 2);
+      expect(uiEvents.filter((event) => event.type === 'ask.requested').map((event) => event.requestId)).toEqual([
+        'q_retry',
+        'q_retry',
+      ]);
+      expect(mock.promptPosts).toHaveLength(1);
+
+      mock.setQuestionReplyStatus(200);
+      session.sendMessage([{ type: 'text', text: 'Choice: Two' }]);
+      await waitFor(() => mock.questionReplies.length === 2);
+      expect(mock.questionReplies.map((reply) => reply.body)).toEqual([
+        { answers: [['One']] },
+        { answers: [['Two']] },
+      ]);
+      expect(mock.promptPosts).toHaveLength(1);
+    });
+  });
+
+  it('does not recapture or prompt while a native question reply is in flight', async () => {
+    await withSession({ questionReplyDelayMs: 250 }, async ({ uiEvents, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_delayed', sessionID: 'ses_test' });
+      const input = {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      };
+      sendQuestion(mock, input);
+      await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 1);
+
+      session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      sendQuestion(mock, input);
+      session.sendMessage([{ type: 'text', text: 'must not become a prompt' }]);
+      await sleep(80);
+
+      expect(uiEvents.filter((event) => event.type === 'ask.requested')).toHaveLength(1);
+      expect(mock.questionGets).toHaveLength(1);
+      expect(mock.questionReplies).toHaveLength(1);
+      expect(mock.promptPosts).toHaveLength(1);
+    });
+  });
+
   it('does not post a prompt when all pending-question ID lookups fail', async () => {
     await withSession({}, async ({ events, uiEvents, mock, session }) => {
       await waitFor(() => mock.promptPosts.length === 1);
@@ -696,6 +782,19 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
         ),
       );
       expect(mock.questionReplies).toEqual([]);
+      expect(mock.promptPosts).toHaveLength(1);
+      const asks = uiEvents.filter((event) => event.type === 'ask.requested');
+      expect(asks).toHaveLength(2);
+      expect(asks[1]).toEqual(asks[0]);
+
+      mock.pendingQuestions.push({ id: 'q_late', sessionID: 'ses_test' });
+      session.sendMessage([{ type: 'text', text: 'Two' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      expect(mock.questionGets).toHaveLength(10);
+      expect(mock.questionReplies[0]).toEqual({
+        path: '/question/q_late/reply',
+        body: { answers: [['Two']] },
+      });
       expect(mock.promptPosts).toHaveLength(1);
     });
   });

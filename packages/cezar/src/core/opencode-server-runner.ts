@@ -31,6 +31,12 @@ export interface OpencodeRunnerOptions {
   timeoutMs?: number;
 }
 
+interface PendingOpencodeQuestion {
+  requestId?: string;
+  askRequestId: string;
+  questions: AskQuestion[];
+}
+
 const SERVER_START_TIMEOUT_MS = 30_000;
 
 /** Grace between the teardown SIGTERM and the SIGKILL that follows it. */
@@ -127,8 +133,9 @@ class OpencodeSession implements AgentSession {
    *  lands in R2 step 2.1). Both streams take their turn-end from the wire
    *  `session.idle` (v1 since #4 — see `finishTurn`). */
   private uiState: OpencodeUiMapperState = createOpencodeUiState();
-  private pendingQuestion: { requestId?: string; questions: AskQuestion[] } | undefined;
+  private pendingQuestion: PendingOpencodeQuestion | undefined;
   private questionCapture: Promise<void> | undefined;
+  private questionReply: Promise<void> | undefined;
   private autoEndTimer: NodeJS.Timeout | undefined;
   private spawnFailed: Error | null = null;
   private timedOut = false;
@@ -246,10 +253,15 @@ class OpencodeSession implements AgentSession {
     }
     const text = textOf(content);
     if (!text) return true;
+    if (this.questionReply) return true;
     if (this.pendingQuestion) {
       const pending = this.pendingQuestion;
-      this.pendingQuestion = undefined;
-      void this.replyQuestion(pending, text);
+      const reply = this.replyQuestion(pending, text);
+      this.questionReply = reply;
+      const clearReply = () => {
+        if (this.questionReply === reply) this.questionReply = undefined;
+      };
+      void reply.then(clearReply, clearReply);
       return true;
     }
     // `prompt` already emitted the note and closed the turn before rethrowing,
@@ -409,6 +421,7 @@ class OpencodeSession implements AgentSession {
     this.turnActive = false;
     this.pendingQuestion = undefined;
     this.questionCapture = undefined;
+    this.questionReply = undefined;
     this.turnFinishedResolve();
     // A part that never saw `time.end` (abort, server quirk) still surfaces
     // its prose before the turn boundary (run.ts reads markers there).
@@ -577,7 +590,8 @@ class OpencodeSession implements AgentSession {
         name === 'question' &&
         this.turnActive &&
         this.pendingQuestion === undefined &&
-        this.questionCapture === undefined
+        this.questionCapture === undefined &&
+        this.questionReply === undefined
       ) {
         const capture = this.captureQuestion(state.input ?? state);
         this.questionCapture = capture;
@@ -636,14 +650,24 @@ class OpencodeSession implements AgentSession {
       if (attempt < 7) await sleep(150);
     }
     if (!this.turnActive || this.turnSerial !== turnSerial) return;
-    this.pendingQuestion = { requestId, questions };
+    const pending: PendingOpencodeQuestion = {
+      requestId,
+      askRequestId:
+        requestId ?? `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      questions,
+    };
+    this.pendingQuestion = pending;
+    this.emitQuestion(pending);
+  }
+
+  private emitQuestion(pending: PendingOpencodeQuestion): void {
     this.emitUi((state) => ({
       state,
       events: [
         {
           type: 'ask.requested',
-          requestId: requestId ?? `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          questions,
+          requestId: pending.askRequestId,
+          questions: pending.questions,
         },
       ],
     }));
@@ -660,22 +684,19 @@ class OpencodeSession implements AgentSession {
     return undefined;
   }
 
-  private async replyQuestion(
-    pending: { requestId?: string; questions: AskQuestion[] },
-    text: string,
-  ): Promise<void> {
+  private async replyQuestion(pending: PendingOpencodeQuestion, text: string): Promise<void> {
     try {
       const requestId = pending.requestId ?? (await this.pendingQuestionId());
-      if (!requestId) {
-        this.emit({ type: 'note', message: 'opencode: question reply failed: no pending question id' });
-        return;
-      }
+      if (!requestId) throw new Error('no pending question id');
+      pending.requestId = requestId;
       await this.http('POST', `/question/${encodeURIComponent(requestId)}/reply`, {
         answers: questionAnswers(pending.questions, text),
       });
+      if (this.pendingQuestion === pending) this.pendingQuestion = undefined;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.emit({ type: 'note', message: `opencode: question reply failed: ${message}` });
+      if (this.pendingQuestion === pending) this.emitQuestion(pending);
     }
   }
 
