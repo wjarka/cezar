@@ -253,10 +253,7 @@ class OpencodeSession implements AgentSession {
 
   sendMessage(content: ContentBlock[]): boolean {
     if (!this.serverOpen) return false;
-    if (this.autoEndTimer) {
-      clearTimeout(this.autoEndTimer);
-      this.autoEndTimer = undefined;
-    }
+    this.cancelAutoEnd();
     const text = textOf(content);
     if (!text) return true;
     if (this.questionReply) {
@@ -282,6 +279,18 @@ class OpencodeSession implements AgentSession {
 
   private deliverPrompt(text: string): void {
     void this.ready.then(() => this.prompt(text)).catch(() => undefined);
+  }
+
+  private cancelAutoEnd(): void {
+    if (!this.autoEndTimer) return;
+    clearTimeout(this.autoEndTimer);
+    this.autoEndTimer = undefined;
+  }
+
+  private scheduleAutoEnd(): void {
+    if (!this.opts.autoEndAfterFirstTurn || !this.serverOpen || this.autoEndTimer) return;
+    this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
+    this.autoEndTimer.unref?.();
   }
 
   end(): void {
@@ -388,6 +397,9 @@ class OpencodeSession implements AgentSession {
     // resume in FIFO order; a teardown (`finishTurn` runs on every exit
     // path) releases them into the `serverOpen` check below.
     while (this.turnActive) await this.turnFinished;
+    // A queued prompt may have started waiting before the preceding idle armed
+    // auto-end. Cancel at actual delivery time, not only at sendMessage time.
+    this.cancelAutoEnd();
     if (!this.sessionId || !this.serverOpen) return;
     this.turnActive = true;
     this.turnEnded = false;
@@ -432,18 +444,16 @@ class OpencodeSession implements AgentSession {
     if (!this.turnActive || this.turnEnded) return;
     this.turnEnded = true;
     this.turnActive = false;
-    this.pendingQuestion = undefined;
     this.questionCapture = undefined;
-    this.questionReply = undefined;
+    // SSE idle can beat the independent reply HTTP response. The active reply
+    // owns pending-question cleanup; without one, the pending ask is stale.
+    if (!this.questionReply) this.pendingQuestion = undefined;
     this.turnFinishedResolve();
     // A part that never saw `time.end` (abort, server quirk) still surfaces
     // its prose before the turn boundary (run.ts reads markers there).
     this.textCoalescer.flush();
     this.emit({ type: 'turn-end' });
-    if (this.opts.autoEndAfterFirstTurn && this.serverOpen && !this.autoEndTimer) {
-      this.autoEndTimer = setTimeout(() => this.end(), AUTO_END_DELAY_MS);
-      this.autoEndTimer.unref?.();
-    }
+    if (!this.questionReply) this.scheduleAutoEnd();
   }
 
   // ---- SSE stream ---------------------------------------------------------
@@ -740,6 +750,7 @@ class OpencodeSession implements AgentSession {
       if (this.pendingQuestion === pending) this.pendingQuestion = undefined;
       const queued = this.queuedQuestionMessages.splice(0);
       for (const message of queued) this.deliverPrompt(message);
+      if (queued.length === 0 && this.turnEnded) this.scheduleAutoEnd();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.emit({ type: 'note', message: `opencode: question reply failed: ${message}` });

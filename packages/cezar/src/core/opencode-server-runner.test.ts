@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from './agent-runner.ts';
+import { AUTO_END_DELAY_MS } from './claude-cli-runner.ts';
 import { KILL_GRACE_MS, OpencodeServerRunner } from './opencode-server-runner.ts';
 import type { UiEvent } from './ui-events.ts';
 
@@ -312,6 +313,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
   async function withSession(
     opts: MockServerOptions & {
       onUiEvent?: (event: UiEvent) => void;
+      autoEndAfterFirstTurn?: boolean;
     },
     run: (h: Harness) => Promise<void>,
   ): Promise<void> {
@@ -323,6 +325,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       { userPrompt: 'go', cwd: process.cwd() },
       (e) => events.push(e),
       {
+        autoEndAfterFirstTurn: opts.autoEndAfterFirstTurn,
         onUiEvent: (e) => {
           uiEvents.push(e);
           opts.onUiEvent?.(e);
@@ -864,6 +867,113 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
         await waitFor(() => mock.promptPosts.length === 2);
         expect(mock.promptBodies[1]).toEqual({
           parts: [{ type: 'text', text: 'queued after failed answer' }],
+        });
+      },
+    );
+  });
+
+  it('keeps post-idle messages queued until a delayed reply succeeds and drains them FIFO', async () => {
+    await withSession({ questionReplyDelayMs: 260 }, async ({ events, mock, session }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+      mock.pendingQuestions.push({ id: 'q_idle_success', sessionID: 'ses_test' });
+      sendQuestion(mock, {
+        questions: [
+          {
+            header: 'Choice',
+            question: 'Which option?',
+            options: [{ label: 'One' }, { label: 'Two' }],
+          },
+        ],
+      });
+      await waitFor(() => mock.questionGets.length === 1);
+
+      session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+      await waitFor(() => mock.questionReplies.length === 1);
+      session.sendMessage([{ type: 'text', text: 'queued A' }]);
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => count(events, 'turn-end') === 1);
+      session.sendMessage([{ type: 'text', text: 'queued B' }]);
+      await sleep(100);
+      expect(mock.promptPosts).toHaveLength(1);
+
+      await waitFor(() => mock.promptPosts.length === 2);
+      expect(mock.promptBodies[1]).toEqual({ parts: [{ type: 'text', text: 'queued A' }] });
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+      await waitFor(() => mock.promptPosts.length === 3);
+      expect(mock.promptBodies[2]).toEqual({ parts: [{ type: 'text', text: 'queued B' }] });
+    });
+  });
+
+  it('restores an ask after an early-idle reply failure and retains queued text through retry', async () => {
+    await withSession(
+      { questionReplyStatus: 500, questionReplyDelayMs: 180 },
+      async ({ events, uiEvents, mock, session }) => {
+        await waitFor(() => mock.promptPosts.length === 1);
+        mock.pendingQuestions.push({ id: 'q_idle_retry', sessionID: 'ses_test' });
+        sendQuestion(mock, {
+          questions: [
+            {
+              header: 'Choice',
+              question: 'Which option?',
+              options: [{ label: 'One' }, { label: 'Two' }],
+            },
+          ],
+        });
+        await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 1);
+
+        session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+        await waitFor(() => mock.questionReplies.length === 1);
+        session.sendMessage([{ type: 'text', text: 'queued A' }]);
+        mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+        await waitFor(() => count(events, 'turn-end') === 1);
+        await waitFor(() => uiEvents.filter((event) => event.type === 'ask.requested').length === 2);
+        expect(mock.promptPosts).toHaveLength(1);
+
+        mock.setQuestionReplyStatus(200);
+        session.sendMessage([{ type: 'text', text: 'Choice: Two' }]);
+        await waitFor(() => mock.questionReplies.length === 2);
+        await sleep(80);
+        expect(mock.promptPosts).toHaveLength(1);
+        expect(mock.questionReplies.map((reply) => reply.body)).toEqual([
+          { answers: [['One']] },
+          { answers: [['Two']] },
+        ]);
+
+        await waitFor(() => mock.promptPosts.length === 2);
+        expect(mock.promptBodies[1]).toEqual({ parts: [{ type: 'text', text: 'queued A' }] });
+      },
+    );
+  });
+
+  it('defers auto-end while an early-idle reply still owns queued prompt delivery', async () => {
+    await withSession(
+      { autoEndAfterFirstTurn: true, questionReplyDelayMs: AUTO_END_DELAY_MS + 180 },
+      async ({ events, mock, session }) => {
+        await waitFor(() => mock.promptPosts.length === 1);
+        mock.pendingQuestions.push({ id: 'q_idle_auto_end', sessionID: 'ses_test' });
+        sendQuestion(mock, {
+          questions: [
+            {
+              header: 'Choice',
+              question: 'Which option?',
+              options: [{ label: 'One' }, { label: 'Two' }],
+            },
+          ],
+        });
+        await waitFor(() => mock.questionGets.length === 1);
+
+        session.sendMessage([{ type: 'text', text: 'Choice: One' }]);
+        await waitFor(() => mock.questionReplies.length === 1);
+        session.sendMessage([{ type: 'text', text: 'queued after idle' }]);
+        mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+        await waitFor(() => count(events, 'turn-end') === 1);
+        await sleep(AUTO_END_DELAY_MS + 60);
+
+        expect(session.open).toBe(true);
+        expect(mock.promptPosts).toHaveLength(1);
+        await waitFor(() => mock.promptPosts.length === 2);
+        expect(mock.promptBodies[1]).toEqual({
+          parts: [{ type: 'text', text: 'queued after idle' }],
         });
       },
     );
