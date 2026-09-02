@@ -110,6 +110,15 @@ describe('buildClaudeArgs permission mode', () => {
     expect(args).not.toContain('--dangerously-skip-permissions');
   });
 
+  it('keeps CEZ_APPROVAL_GATE when CEZ_CLAUDE_PERMISSION_MODE is unknown', () => {
+    const args = buildClaudeArgs(spec, {
+      CEZ_CLAUDE_PERMISSION_MODE: 'manual',
+      CEZ_APPROVAL_GATE: '1',
+    });
+    const idx = args.indexOf('--permission-mode');
+    expect(args[idx + 1]).toBe('acceptEdits');
+  });
+
   it('selects acceptEdits without CEZ_APPROVAL_GATE', () => {
     const args = buildClaudeArgs(spec, { CEZ_CLAUDE_PERMISSION_MODE: 'acceptEdits' });
     const idx = args.indexOf('--permission-mode');
