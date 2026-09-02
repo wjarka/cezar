@@ -25,9 +25,14 @@
  *  - tool parts have the ONLY real `pending` phase of the three backends
  *    (`pending→pending`, `running→running`, `completed→completed`,
  *    `error→failed`);
- *  - the SSE bus is server-wide: parts from a foreign session id are the
- *    active subtask's child session and nest via `parentItemId` (§7.1);
- *    anything foreign outside a subtask scope is dropped.
+ *  - the SSE bus is server-wide: parts from a foreign session id are a
+ *    subtask's child session and nest via `parentItemId` (§7.1). A `subtask`
+ *    part or a top-level `task` tool call opens a scope: the task tool names
+ *    its child (`metadata.sessionId`) and binds to it outright, while a
+ *    scope with no wire link queues and child sessions claim queued scopes
+ *    first-in-first-out as they are heard from (#5). Closed children are
+ *    tombstoned for the mapper's lifetime; anything foreign outside a
+ *    subtask scope is dropped.
  */
 
 import type {
@@ -58,8 +63,18 @@ interface MessageUsage {
 
 interface SubtaskScope {
   readonly id: string;
+  /** The wire tool name the item was started under (`subtask` for subtask
+   *  parts, `task` for the task tool) — completion keeps the same name. */
+  readonly name: string;
   readonly title: string;
   readonly input?: unknown;
+  /** The child session the wire named for this scope, when it did: opencode's
+   *  task tool publishes `metadata.sessionId` on its running snapshot right
+   *  after creating the child. Known → bound directly, never through FIFO. */
+  readonly childSession?: string;
+  /** The scope this one was opened inside (a task issued from a child
+   *  session) — completion keeps the same nesting. */
+  readonly parentItemId?: string;
 }
 
 export interface OpencodeUiMapperState {
@@ -85,17 +100,26 @@ export interface OpencodeUiMapperState {
   readonly startedItems: ReadonlySet<string>;
   /** Text/reasoning/patch part ids whose `item.completed` was emitted. */
   readonly endedItems: ReadonlySet<string>;
-  /** Tool part id → last emitted status/title (flip + live-title detection). */
-  readonly tools: ReadonlyMap<string, { status: ToolStatus; title: string }>;
+  /** Tool part id → last emitted status/title (flip + live-title detection).
+   *  `live` says the title came off the wire rather than being derived from
+   *  the input, so only a live title is worth carrying over. */
+  readonly tools: ReadonlyMap<string, { status: ToolStatus; title: string; live: boolean }>;
   /** Serialized last plan — todowrite snapshots are idempotent, so identical
    *  replacements emit no duplicate `plan.updated`. */
   readonly lastPlanJson: string | null;
   /** Child session id → subtask scope. Foreign parts are attributed only to
    *  their own child session; that session's idle completes the scope. */
   readonly subtasks: ReadonlyMap<string, SubtaskScope>;
-  /** Subtask parts do not carry the child session id. Bind one on the first
-   *  foreign event only while attribution is unambiguous. */
+  /** Subtask parts and task tool calls do not carry the child session id.
+   *  Pending scopes bind to child sessions first-in-first-out: the oldest
+   *  pending subtask takes the next child session heard from (#5). */
   readonly unboundSubtasks: readonly SubtaskScope[];
+  /** Child sessions whose scope is over (the child went idle, its task tool
+   *  settled, or the main turn ended around it). A late event from one must
+   *  never claim a pending scope through the FIFO queue — not in this turn and
+   *  not in a later one, so the set lives as long as the mapper state does
+   *  (one id per child session ever seen; small by construction). */
+  readonly closedSessions: ReadonlySet<string>;
   readonly usageByMessage: ReadonlyMap<string, MessageUsage>;
   /** Last emitted session totals — usage.updated fires only on change. */
   readonly lastUsage: { total: number; cost: number | null } | null;
@@ -122,6 +146,7 @@ export function createOpencodeUiState(): OpencodeUiMapperState {
     lastPlanJson: null,
     subtasks: new Map(),
     unboundSubtasks: [],
+    closedSessions: new Set(),
     usageByMessage: new Map(),
     lastUsage: null,
   };
@@ -237,8 +262,8 @@ function mapPart(props: Record<string, unknown>, state: OpencodeUiMapperState): 
   if (type === undefined || id === undefined) return { events: [], state };
 
   // Foreign-session parts nest only under the subtask bound to that child
-  // session. A newly seen child can claim the sole unbound subtask; with two
-  // candidates attribution is ambiguous, so the event is dropped.
+  // session. A newly seen child claims the oldest pending subtask; with none
+  // pending the part has no home, so the event is dropped.
   const partSession = str(part.sessionID);
   const foreign = partSession !== undefined && state.sessionId !== null && partSession !== state.sessionId;
   const resolved = foreign && partSession !== undefined ? resolveSubtask(partSession, state) : undefined;
@@ -263,7 +288,7 @@ function mapPart(props: Record<string, unknown>, state: OpencodeUiMapperState): 
     case 'patch':
       return mapPatch(part, id, parentItemId, state);
     case 'subtask':
-      return mapSubtask(part, id, state);
+      return mapSubtask(part, id, parentItemId, state);
     case 'step-finish':
       return mapStepFinish(part, messageID, state);
     default:
@@ -358,8 +383,13 @@ function mapTool(
   const display = toolDisplay(name, toolState.input);
   // The running/completed states carry a live human title ("npm test") — the
   // wire word wins over the derived one (§7.1). The error state has no title
-  // field (§4.2), so the last live title carries over instead of regressing.
-  const title = str(toolState.title) ?? prev?.title ?? display.title;
+  // field (§4.2), so the last LIVE title carries over instead of regressing.
+  // A derived title is re-derived: the pending snapshot's input is often `{}`
+  // (arguments still parsing), and "Task" must become "Task: Dig in" once
+  // the running snapshot brings the description.
+  const wireTitle = str(toolState.title);
+  const title = wireTitle ?? (prev?.live ? prev.title : display.title);
+  const live = wireTitle !== undefined || (prev?.live ?? false);
 
   const item: UiToolItem = { kind: 'tool', id, name, toolKind: display.toolKind, title, status };
   if (toolState.input !== undefined) item.input = toolState.input;
@@ -392,8 +422,41 @@ function mapTool(
   let next = state;
   if (events.length > 0) {
     const tools = new Map(state.tools);
-    tools.set(id, { status, title });
+    tools.set(id, { status, title, live });
     next = { ...next, tools };
+  }
+
+  // A task tool call spawns a child session exactly like a `subtask` part
+  // does (#5). When the snapshot names that child (`metadata.sessionId`,
+  // published as soon as the child exists) the scope binds to it outright;
+  // otherwise it queues for the next child session heard from. A task issued
+  // from inside a child session opens a scope of its own, nested under the
+  // outer one, so its grandchild's output has a home too.
+  if (isSubtaskTool(name)) {
+    const childSession = metadata ? (str(metadata.sessionId) ?? str(metadata.sessionID)) : undefined;
+    const scope: SubtaskScope = {
+      id,
+      name,
+      title,
+      ...(item.input !== undefined ? { input: item.input } : {}),
+      ...(childSession !== undefined ? { childSession } : {}),
+      ...(parentItemId !== undefined ? { parentItemId } : {}),
+    };
+    if (!settled) {
+      // OpenCode publishes the part before its arguments finish parsing, so
+      // the first snapshot is often `{}` and later ones fill the input in —
+      // sometimes without moving the status or the derived title, i.e. with
+      // no item event. The scope follows every snapshot regardless, or the
+      // child's idle would complete it with stale metadata.
+      next = prev === undefined ? { ...next, unboundSubtasks: [...next.unboundSubtasks, scope] } : refreshScope(scope, next);
+      if (childSession !== undefined) next = bindScope(scope, childSession, next);
+    } else if (events.length > 0) {
+      // The tool's own settlement is authoritative (it carries the output), so
+      // its scope is released: a later child idle must not re-complete it. A
+      // child the wire named is closed too, even one that never spoke —
+      // otherwise its late first event would take a sibling's scope.
+      next = releaseScope(id, childSession, next);
+    }
   }
 
   // todowrite IS the plan (full-replacement semantics, deduplicated).
@@ -511,6 +574,7 @@ function patchArtifacts(files: unknown): { diffs: FileDiff[]; locations: ToolLoc
 function mapSubtask(
   part: Record<string, unknown>,
   id: string,
+  parentItemId: string | undefined,
   state: OpencodeUiMapperState,
 ): OpencodeUiMapping {
   if (state.startedItems.has(id)) return { events: [], state };
@@ -529,12 +593,20 @@ function mapSubtask(
   if (description !== undefined) input.description = description;
   if (str(part.agent) !== undefined) input.agent = part.agent;
   if (Object.keys(input).length > 0) item.input = input;
+  if (parentItemId !== undefined) item.parentItemId = parentItemId;
+  const scope: SubtaskScope = {
+    id,
+    name: item.name,
+    title: item.title,
+    ...(item.input !== undefined ? { input: item.input } : {}),
+    ...(parentItemId !== undefined ? { parentItemId } : {}),
+  };
   return {
     events: [{ type: 'item.started', item }],
     state: {
       ...state,
       startedItems: new Set(state.startedItems).add(id),
-      unboundSubtasks: [...state.unboundSubtasks, { id, title: item.title, input: item.input }],
+      unboundSubtasks: [...state.unboundSubtasks, scope],
     },
   };
 }
@@ -567,6 +639,73 @@ function mapStepFinish(
   return emitUsage({ ...state, usageByMessage, currentTurnMessageIds });
 }
 
+/** Replace the scope owned by `scope.id`, bound or still pending, with the
+ *  latest snapshot of its title and input. */
+function refreshScope(scope: SubtaskScope, state: OpencodeUiMapperState): OpencodeUiMapperState {
+  let changed = false;
+  const unboundSubtasks = state.unboundSubtasks.map((s) => {
+    if (s.id !== scope.id || sameScope(s, scope)) return s;
+    changed = true;
+    return scope;
+  });
+  const subtasks = new Map(state.subtasks);
+  for (const [sessionId, s] of state.subtasks) {
+    if (s.id !== scope.id || sameScope(s, scope)) continue;
+    subtasks.set(sessionId, scope);
+    changed = true;
+  }
+  return changed ? { ...state, subtasks, unboundSubtasks } : state;
+}
+
+function sameScope(a: SubtaskScope, b: SubtaskScope): boolean {
+  return (
+    a.name === b.name &&
+    a.title === b.title &&
+    a.childSession === b.childSession &&
+    a.parentItemId === b.parentItemId &&
+    JSON.stringify(a.input) === JSON.stringify(b.input)
+  );
+}
+
+/** Bind `scope` to the child session the wire named for it: out of the
+ *  pending queue and into the session map. A scope FIFO had already guessed
+ *  onto that session goes back to the head of the queue — the wire outranks
+ *  the guess, and that scope's real child is still to be heard from. */
+function bindScope(scope: SubtaskScope, childSession: string, state: OpencodeUiMapperState): OpencodeUiMapperState {
+  if (state.closedSessions.has(childSession)) return releaseScope(scope.id, undefined, state);
+  const current = state.subtasks.get(childSession);
+  if (current?.id === scope.id && !state.unboundSubtasks.some((s) => s.id === scope.id)) return state;
+  const unboundSubtasks = state.unboundSubtasks.filter((s) => s.id !== scope.id);
+  if (current !== undefined && current.id !== scope.id) unboundSubtasks.unshift(current);
+  const subtasks = new Map(state.subtasks);
+  for (const [sessionId, s] of state.subtasks) if (s.id === scope.id && sessionId !== childSession) subtasks.delete(sessionId);
+  subtasks.set(childSession, scope);
+  return { ...state, subtasks, unboundSubtasks };
+}
+
+/** Drop the scope owned by item `id`, bound or still pending, closing every
+ *  child session it was bound to plus the one the wire named (if any). */
+function releaseScope(id: string, childSession: string | undefined, state: OpencodeUiMapperState): OpencodeUiMapperState {
+  const pending = state.unboundSubtasks.filter((scope) => scope.id !== id);
+  const bound = [...state.subtasks].filter(([, scope]) => scope.id === id);
+  const named = childSession ?? state.unboundSubtasks.find((scope) => scope.id === id)?.childSession;
+  const closeNamed = named !== undefined && !state.closedSessions.has(named);
+  if (pending.length === state.unboundSubtasks.length && bound.length === 0 && !closeNamed) return state;
+  const subtasks = new Map(state.subtasks);
+  const closedSessions = new Set(state.closedSessions);
+  for (const [sessionId] of bound) {
+    subtasks.delete(sessionId);
+    closedSessions.add(sessionId);
+  }
+  if (named !== undefined) closedSessions.add(named);
+  return { ...state, subtasks, unboundSubtasks: pending, closedSessions };
+}
+
+function isSubtaskTool(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === 'task' || lower === 'subtask';
+}
+
 // ---- session lifecycle -------------------------------------------------------
 
 /** `session.idle` is THE turn-end signal (§4.1). The main session's idle
@@ -583,7 +722,7 @@ function mapIdle(props: Record<string, unknown>, state: OpencodeUiMapperState): 
     subtasks.delete(sid);
     return {
       events: [{ type: 'item.completed', item: completedSubtask(resolved.subtask) }],
-      state: { ...resolved.state, subtasks },
+      state: { ...resolved.state, subtasks, closedSessions: new Set(resolved.state.closedSessions).add(sid) },
     };
   }
   // Idle with no turn in flight (or a repeated idle) closes nothing.
@@ -609,6 +748,9 @@ function mapIdle(props: Record<string, unknown>, state: OpencodeUiMapperState): 
       turnErrored: false,
       subtasks: new Map(),
       unboundSubtasks: [],
+      // Children the turn settled are over too: a delayed event from one must
+      // not bind to a scope the NEXT turn queues.
+      closedSessions: new Set([...state.closedSessions, ...state.subtasks.keys()]),
     },
   };
 }
@@ -634,24 +776,28 @@ function resolveSubtask(
 ): { state: OpencodeUiMapperState; subtask?: SubtaskScope } {
   const existing = state.subtasks.get(sessionId);
   if (existing !== undefined) return { state, subtask: existing };
-  if (state.unboundSubtasks.length !== 1) return { state };
-  const subtask = state.unboundSubtasks[0];
+  // A closed child's late events have no home — never a sibling's scope.
+  if (state.closedSessions.has(sessionId)) return { state };
+  // First-in-first-out: the oldest pending subtask claims this child session
+  // and the rest stay queued for the children still to come (#5).
+  const [subtask, ...rest] = state.unboundSubtasks;
   if (subtask === undefined) return { state };
   const subtasks = new Map(state.subtasks);
   subtasks.set(sessionId, subtask);
-  return { state: { ...state, subtasks, unboundSubtasks: [] }, subtask };
+  return { state: { ...state, subtasks, unboundSubtasks: rest }, subtask };
 }
 
 function completedSubtask(subtask: SubtaskScope): UiToolItem {
   const item: UiToolItem = {
     kind: 'tool',
     id: subtask.id,
-    name: 'subtask',
+    name: subtask.name,
     toolKind: 'task',
     title: subtask.title,
     status: 'completed',
   };
   if (subtask.input !== undefined) item.input = subtask.input;
+  if (subtask.parentItemId !== undefined) item.parentItemId = subtask.parentItemId;
   return item;
 }
 

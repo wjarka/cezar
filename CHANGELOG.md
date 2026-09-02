@@ -16,6 +16,20 @@
   is a 400, matching `POST /api/v1/runs`. Spec: `.ai/specs/2026-07-29-agent-profiles.md`.
 
 ## 🐛 Fixes
+- 🐛 **Parallel OpenCode subtasks now each bind to their own child session.** The v2 mapper bound
+  a child session to a subtask only while exactly one subtask was pending, so an agent that spawned
+  two subtasks at once bound neither: every line the children produced was dropped as unattributed
+  and both task rows sat at *running* until the turn ended. A top-level `task` tool call, the
+  way an OpenCode agent actually dispatches a sub-agent, never entered that queue at all; it now
+  opens a scope the moment it appears and binds to the child session OpenCode names on the
+  tool's running snapshot, so parallel tasks attribute deterministically however their children
+  interleave. A `subtask` part carries no such link and binds first-in-first-out, in the order
+  the agent opened them, which is the order OpenCode starts them. A child that is done, because
+  it went idle or its task reported completion, stays closed for the rest of the run, so a late
+  line from it can never land under a sibling or under a later turn's task; and a task's row
+  completes with its final title and input even when the first snapshot arrived before the
+  arguments had parsed. (#5; the v1 half, dropping other sessions' parts from the plain
+  transcript, shipped with #24.)
 - 🐛 **A pull request with merge conflicts no longer reads "ready to merge".** The chip's status
   answers *whose move is it* — `ready` means open, checks green, nobody waited on — and every word
   of that stays true of a branch GitHub is refusing to merge, so a conflicted PR sat there in

@@ -559,6 +559,415 @@ describe('mapOpencodeEvent edge cases', () => {
     expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, mainIdle.state).events).toEqual([]);
   });
 
+  it('two pending subtasks bind to their child sessions first-in-first-out', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(part({ id: 'prt_st_a', type: 'subtask', prompt: 'Inspect A', description: 'Task A' }), state).state;
+    state = mapOpencodeEvent(part({ id: 'prt_st_b', type: 'subtask', prompt: 'Inspect B', description: 'Task B' }), state).state;
+    for (const [msg, sid] of [
+      ['msg_child_a', 'ses_child_a'],
+      ['msg_child_b', 'ses_child_b'],
+    ] as const) {
+      state = mapOpencodeEvent(
+        { type: 'message.updated', properties: { info: { id: msg, sessionID: sid, role: 'assistant' } } },
+        state,
+      ).state;
+    }
+    // The first child to speak takes the oldest pending subtask; the second takes the next one.
+    const a = mapOpencodeEvent(
+      part({ id: 'prt_a', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'A' }),
+      state,
+    );
+    expect(a.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_a', parentItemId: 'prt_st_a' } });
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      a.state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
+    // Each child's idle completes its own subtask, and only that one.
+    const idleB = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_b' } }, b.state);
+    expect(idleB.events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_st_b', status: 'completed' }) },
+    ]);
+    const idleA = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, idleB.state);
+    expect(idleA.events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_st_a', status: 'completed' }) },
+    ]);
+  });
+
+  it('a top-level task tool call is a pending subtask its child session binds to', () => {
+    let state = startedState();
+    const started = mapOpencodeEvent(
+      part({
+        id: 'prt_task',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Dig in', prompt: 'dig', subagent_type: 'general' } },
+      }),
+      state,
+    );
+    expect(started.events).toEqual([
+      {
+        type: 'item.started',
+        item: expect.objectContaining({ kind: 'tool', id: 'prt_task', name: 'task', toolKind: 'task', status: 'running' }),
+      },
+    ]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      started.state,
+    ).state;
+    const nested = mapOpencodeEvent(
+      part({ id: 'prt_c', messageID: 'msg_child', sessionID: 'ses_child', type: 'text', text: 'found it' }),
+      state,
+    );
+    expect(nested.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_c', parentItemId: 'prt_task' } });
+    // The child's idle completes the task item under its own name and title.
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, nested.state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: {
+          kind: 'tool',
+          id: 'prt_task',
+          name: 'task',
+          toolKind: 'task',
+          title: 'Task: Dig in',
+          status: 'completed',
+          input: { description: 'Dig in', prompt: 'dig', subagent_type: 'general' },
+        },
+      },
+    ]);
+  });
+
+  it('a task tool that settles releases its scope so the child idle does not re-complete it', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in' } } }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_c', messageID: 'msg_child', sessionID: 'ses_child', type: 'text', text: 'found it' }),
+      state,
+    ).state;
+    const done = mapOpencodeEvent(
+      part({
+        id: 'prt_task',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'completed', input: { description: 'Dig in' }, output: 'the answer' },
+      }),
+      state,
+    );
+    expect(done.events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_task', name: 'task', output: 'the answer' }) },
+    ]);
+    // The tool's own completion carried the output; a later child idle must not overwrite it.
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, done.state).events).toEqual([]);
+    // Nor does the main idle settle it a second time.
+    const mainIdle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: SESSION_ID } }, done.state);
+    expect(mainIdle.events).toEqual([{ type: 'turn.completed', turnId: 'turn_1', stopReason: 'end_turn' }]);
+  });
+
+  it('a child whose task settled cannot claim a pending sibling with a late idle', () => {
+    let state = startedState();
+    for (const [id, description] of [
+      ['prt_task_a', 'Task A'],
+      ['prt_task_b', 'Task B'],
+    ] as const) {
+      state = mapOpencodeEvent(
+        part({ id, type: 'tool', tool: 'task', state: { status: 'running', input: { description } } }),
+        state,
+      ).state;
+    }
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    // Child A speaks and binds task A; task A then settles before child A goes idle.
+    state = mapOpencodeEvent(
+      part({ id: 'prt_a', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'A' }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task_a', type: 'tool', tool: 'task', state: { status: 'completed', input: { description: 'Task A' }, output: 'a' } }),
+      state,
+    ).state;
+    // Child A's late idle belongs to a released scope: it must not complete task B.
+    const lateIdle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, state);
+    expect(lateIdle.events).toEqual([]);
+    // Task B is still pending for child B, which is only heard from now.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      lateIdle.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_b' } }, b.state).events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_task_b', status: 'completed' }) },
+    ]);
+  });
+
+  it('a child that already went idle cannot claim a pending sibling with a late event', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(part({ id: 'prt_st_a', type: 'subtask', prompt: 'A', description: 'Task A' }), state).state;
+    state = mapOpencodeEvent(part({ id: 'prt_st_b', type: 'subtask', prompt: 'B', description: 'Task B' }), state).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    state = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, state).state;
+    // A trailing message.updated (final usage) from child A after its idle.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant', cost: 0.01 } } },
+      state,
+    ).state;
+    const late = mapOpencodeEvent(
+      part({ id: 'prt_a_late', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'late' }),
+      state,
+    );
+    expect(late.events).toEqual([]);
+    // Task B still binds to child B.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      late.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
+  });
+
+  it('a task scope follows later tool snapshots, so completion carries the final title and input', () => {
+    let state = startedState();
+    // OpenCode publishes the tool part before its arguments finish parsing.
+    state = mapOpencodeEvent(part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'pending', input: {} } }), state).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in', prompt: 'dig' } } }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      state,
+    ).state;
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: {
+          kind: 'tool',
+          id: 'prt_task',
+          name: 'task',
+          toolKind: 'task',
+          title: 'Task: Dig in',
+          status: 'completed',
+          input: { description: 'Dig in', prompt: 'dig' },
+        },
+      },
+    ]);
+  });
+
+  it('a child closed in one turn cannot bind to a task pending in the next turn', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(part({ id: 'prt_st_a', type: 'subtask', prompt: 'A', description: 'Task A' }), state).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    // The main turn ends while child A never went idle: the turn settles it.
+    state = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: SESSION_ID } }, state).state;
+    // Next turn, a fresh subtask is pending.
+    state = opencodeTurnStarted(state).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_b', sessionID: SESSION_ID, role: 'assistant' } } },
+      state,
+    ).state;
+    state = mapOpencodeEvent(part({ id: 'prt_st_b', messageID: 'msg_b', type: 'subtask', prompt: 'B', description: 'Task B' }), state).state;
+    // A delayed event from the old child must not nest under (or complete) the new subtask.
+    const stale = mapOpencodeEvent(
+      part({ id: 'prt_a_stale', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'stale' }),
+      state,
+    );
+    expect(stale.events).toEqual([]);
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, stale.state).events).toEqual([]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      stale.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_st_b' } });
+  });
+
+  it('a task scope picks up an input-only snapshot that emits no item event', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in' } } }),
+      state,
+    ).state;
+    // Same status, same derived title, richer input: no UI event, but the scope must follow.
+    const quiet = mapOpencodeEvent(
+      part({ id: 'prt_task', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Dig in', prompt: 'dig' } } }),
+      state,
+    );
+    expect(quiet.events).toEqual([]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child', sessionID: 'ses_child', role: 'assistant' } } },
+      quiet.state,
+    ).state;
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child' } }, state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: expect.objectContaining({ id: 'prt_task', status: 'completed', input: { description: 'Dig in', prompt: 'dig' } }),
+      },
+    ]);
+  });
+
+  it('a task tool that names its child session in metadata binds to it, ahead of the FIFO queue', () => {
+    let state = startedState();
+    // Task B is queued first with no wire link; task A arrives with its child session id.
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task_b', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Task B' } } }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task A' }, metadata: { parentSessionId: SESSION_ID, sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    const a = mapOpencodeEvent(
+      part({ id: 'prt_a', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'A' }),
+      state,
+    );
+    expect(a.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_a', parentItemId: 'prt_task_a' } });
+    // Task B is still pending for the next unknown child.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      a.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
+  });
+
+  it('a task that settles before its child ever spoke still tombstones the child named in metadata', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task A' }, metadata: { sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      part({ id: 'prt_task_b', type: 'tool', tool: 'task', state: { status: 'running', input: { description: 'Task B' } } }),
+      state,
+    ).state;
+    // Task A settles with no event from child A having arrived.
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'completed', input: { description: 'Task A' }, output: 'a', metadata: { sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    // Child A's first (late) event must not take task B.
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    const late = mapOpencodeEvent(
+      part({ id: 'prt_a_late', messageID: 'msg_child_a', sessionID: 'ses_child_a', type: 'text', text: 'late' }),
+      state,
+    );
+    expect(late.events).toEqual([]);
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, late.state).events).toEqual([]);
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_b', sessionID: 'ses_child_b', role: 'assistant' } } },
+      late.state,
+    ).state;
+    const b = mapOpencodeEvent(
+      part({ id: 'prt_b', messageID: 'msg_child_b', sessionID: 'ses_child_b', type: 'text', text: 'B' }),
+      state,
+    );
+    expect(b.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_b', parentItemId: 'prt_task_b' } });
+  });
+
+  it('a task tool issued from a child session scopes its own grandchild under itself', () => {
+    let state = startedState();
+    state = mapOpencodeEvent(
+      part({
+        id: 'prt_task_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task A' }, metadata: { sessionId: 'ses_child_a' } },
+      }),
+      state,
+    ).state;
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_child_a', sessionID: 'ses_child_a', role: 'assistant' } } },
+      state,
+    ).state;
+    // Child A dispatches a task of its own; OpenCode names the grandchild session on it.
+    const nestedTask = mapOpencodeEvent(
+      part({
+        id: 'prt_task_aa',
+        messageID: 'msg_child_a',
+        sessionID: 'ses_child_a',
+        type: 'tool',
+        tool: 'task',
+        state: { status: 'running', input: { description: 'Task AA' }, metadata: { sessionId: 'ses_grandchild' } },
+      }),
+      state,
+    );
+    expect(nestedTask.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_task_aa', parentItemId: 'prt_task_a' } });
+    state = mapOpencodeEvent(
+      { type: 'message.updated', properties: { info: { id: 'msg_gc', sessionID: 'ses_grandchild', role: 'assistant' } } },
+      nestedTask.state,
+    ).state;
+    // The grandchild's output nests under the nested task, not under task A and not dropped.
+    const gc = mapOpencodeEvent(
+      part({ id: 'prt_gc', messageID: 'msg_gc', sessionID: 'ses_grandchild', type: 'text', text: 'deep' }),
+      state,
+    );
+    expect(gc.events[0]).toMatchObject({ type: 'item.started', item: { id: 'prt_gc', parentItemId: 'prt_task_aa' } });
+    // The grandchild's idle completes the nested task, still nested under task A.
+    const idle = mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_grandchild' } }, gc.state);
+    expect(idle.events).toEqual([
+      {
+        type: 'item.completed',
+        item: expect.objectContaining({ id: 'prt_task_aa', name: 'task', status: 'completed', parentItemId: 'prt_task_a' }),
+      },
+    ]);
+    // Task A itself is untouched by the grandchild's idle.
+    expect(mapOpencodeEvent({ type: 'session.idle', properties: { sessionID: 'ses_child_a' } }, idle.state).events).toEqual([
+      { type: 'item.completed', item: expect.objectContaining({ id: 'prt_task_a', status: 'completed' }) },
+    ]);
+  });
+
   it('session.started is emitted once and requires an id', () => {
     const state = createOpencodeUiState();
     expect(opencodeSessionStarted('', state).events).toEqual([]);
