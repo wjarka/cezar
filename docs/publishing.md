@@ -160,8 +160,8 @@ On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
    name, so `@wjarka/*` needs no org and no team setup.
 2. Create a **granular access token**: *Read and write*, covering the
    `@wjarka` scope **and** able to create the unscoped `cezarion` package; set
-   an expiry per your policy (CI fails loudly with `E401`/`E404` when it
-   lapses).
+   an expiry per your policy (CI fails loudly with `E401`/`E404`/`EOTP` when
+   it is wrong or lapses).
    - "Able to create" is the load-bearing part: a token limited to *selected
      packages* cannot **create** a new one, and npm reports that as a
      misleading `E404 Not Found - PUT <name>` rather than a `403`. Since both
@@ -169,6 +169,17 @@ On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
      `cezarion` once by hand first and then narrow the token.
    - The same trap catches every package later added to the release set —
      `@open-mercato/cezar-api-client` was the first to hit it upstream.
+   - **The token TYPE matters as much as its scope.** A classic *Publish*
+     token fails against an account that enforces 2FA for writes: the
+     registry answers `npm error code EOTP` (one-time password required) and
+     aborts *after* uploading the file list, so it reads like a mid-publish
+     glitch rather than a credential problem. Granular tokens and classic
+     *Automation* tokens are exempt; a classic Publish token is not. Hit live
+     on #30 with `EOTP` on `@wjarka/cezarion` before the first release, which
+     is why this step says granular.
+   - Do **not** answer an `EOTP` by relaxing the account's two-factor mode to
+     *authorization only*. That weakens every package the account owns to fix
+     one CI job; change the token type instead.
 3. After the first publish, for every package: Settings → *Publishing access*
    → **"Require two-factor authentication or an automation or granular access
    token"** (CI publishes with the token; humans still need 2FA).
