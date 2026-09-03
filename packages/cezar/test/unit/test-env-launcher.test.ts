@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -40,6 +40,14 @@ function makeFixture(withSetsid: boolean): { root: string; path: string } {
   writeFileSync(join(root, '.ai/browsers/agent-browser.md'), '# test provider\n');
   writeFileSync(join(root, 'package.json'), '{"private":true}\n');
   writeFileSync(join(root, 'package-lock.json'), '{}\n');
+  // The reuse check compares tracked-source mtimes against the second-truncated
+  // startedAt (#36): a cold boot that finishes in the same wall-clock second as
+  // these files reads them as changed since boot and refuses a reuse the test
+  // expects (#31). Backdate them well outside any boot second so the warm run's
+  // verdict never depends on how fast the cold boot was.
+  const safelyBeforeBoot = new Date(Date.now() - 30_000);
+  utimesSync(join(root, 'package.json'), safelyBeforeBoot, safelyBeforeBoot);
+  utimesSync(join(root, 'package-lock.json'), safelyBeforeBoot, safelyBeforeBoot);
 
   const commands = ['cat', 'chmod', 'curl', 'date', 'dirname', 'find', 'grep', 'id', 'kill', 'mkdir', 'mv', 'nohup', 'pwd', 'rm', 'sh', 'sleep', 'tail', 'uname'];
   if (withSetsid) commands.push('setsid');
@@ -129,8 +137,10 @@ for (const withSetsid of [true, false]) {
 
       const warm = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
       assert.equal(warm.status, 0, warm.stderr);
-      assert.match(warm.stdout, /TEST_ENV_REUSED=1/);
-      assert.equal(descriptor(fixture.root).app.pid, first.app.pid);
+      // try_reuse logs the reason it bailed to stderr, but a cold boot still exits 0 —
+      // surface it in the assertion message so a REUSED=0 failure names its cause.
+      assert.match(warm.stdout, /TEST_ENV_REUSED=1/, `warm boot refused reuse:\n${warm.stderr}`);
+      assert.equal(descriptor(fixture.root).app.pid, first.app.pid, `warm boot refused reuse:\n${warm.stderr}`);
 
       const stopped = spawnSync('/bin/sh', [down], { encoding: 'utf8', env, timeout: 20_000 });
       assert.equal(stopped.status, 0, stopped.stderr);
@@ -140,3 +150,45 @@ for (const withSetsid of [true, false]) {
     },
   );
 }
+
+test('a tracked file inside the boot second refuses reuse and names the file (#31, #36)', () => {
+  // Deterministic reproduction of the #31 flake's signature: the freshness check
+  // compares tracked-source mtimes against the second-truncated startedAt, so a
+  // file dated inside the boot's own second reads as changed since boot. The warm
+  // run must then cold-boot AND say why. NOTE to #36: keeping the milliseconds in
+  // startedAt turns this plant into a reuse — flip the REUSED assertion with it.
+  const fixture = makeFixture(false);
+  const env = { ...process.env, PATH: fixture.path, TEST_ENV_CACHE_TTL_SECONDS: '600' };
+  const up = join(fixture.root, '.ai/scripts/test-env-up.sh');
+  const down = join(fixture.root, '.ai/scripts/test-env-down.sh');
+
+  const cold = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
+  assert.equal(cold.status, 0, cold.stderr);
+  assert.match(cold.stdout, /TEST_ENV_REUSED=0/);
+  const coldPid = descriptor(fixture.root).app.pid;
+  launchedPids.add(coldPid);
+
+  const startedAt = JSON.parse(readFileSync(join(fixture.root, '.ai/qa/test-env.json'), 'utf8')).startedAt as string;
+  const insideBootSecond = new Date(Math.floor(Date.parse(startedAt) / 1000) * 1000 + 500);
+  utimesSync(join(fixture.root, 'package.json'), insideBootSecond, insideBootSecond);
+
+  const refused = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
+  assert.equal(refused.status, 0, refused.stderr);
+  assert.match(refused.stdout, /TEST_ENV_REUSED=0/);
+  assert.match(refused.stderr, /source changed since boot/);
+  assert.match(refused.stderr, /package\.json/);
+  // The refused reuse tore the cold app down and rebooted: swap the tracked pid.
+  launchedPids.delete(coldPid);
+  launchedPids.add(descriptor(fixture.root).app.pid);
+
+  // The refused reuse rebooted onto a fresh startedAt the plant predates, so the
+  // next warm run reuses again — the bail-out poisons nothing.
+  const warm = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.match(warm.stdout, /TEST_ENV_REUSED=1/, `warm boot refused reuse:\n${warm.stderr}`);
+
+  const stopped = spawnSync('/bin/sh', [down], { encoding: 'utf8', env, timeout: 20_000 });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /TEST_ENV_STATUS=stopped/);
+  launchedPids.delete(descriptor(fixture.root).app.pid);
+});
