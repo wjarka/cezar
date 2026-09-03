@@ -31,26 +31,33 @@ How cezar reaches npm. Two paths, deliberately separate
   cuts `main`'s tip every night under the `nightly` dist-tag, so `npx cezarion@nightly`
   is always the trunk. Also runnable on demand from the Actions tab.
 
-Three packages are in the release, always at the same version; two of them ship:
+Every workspace manifest is in the release, always at the same version; two of
+them ship:
 
 | Package | Ships? | What it is |
 |---|---|---|
-| `@open-mercato/cezar-api-client` | **no — `private`** | the typed client and shared contract types (`packages/api-client`) |
+| `@open-mercato/cezar-contract` | **no — `private`** | the HTTP contract schemas (`packages/contract`) |
+| `@open-mercato/cezar-api-client` | **no — `private`** | the typed client (`packages/api-client`) |
 | `@wjarka/cezarion` | yes | the service + CLI, ships the built cockpit (`packages/cezar`) |
+| `@open-mercato/cezar-web` | **no — `private`** | the cockpit SPA (`packages/web`) |
 | `cezarion` | yes | the unscoped bin alias, so `npx cezarion` works (`alias-cezarion`) |
 
-That table is also the **publish order**, and it is load-bearing: each package
-depends on the one above it, so publishing a dependent first would briefly
+The publishable rows are also the **publish order**, and it is load-bearing: each
+package depends on the one above it, so publishing a dependent first would briefly
 advertise a version of its dependency that is not on the registry yet. The
 workspace root itself is `private` and is not in the release at all.
 
-**Private ≠ excluded.** The api-client is stamped like everything else — its
-version moves in lockstep and the service's pin against it is rewritten — it is
-simply never handed to npm. It is consumed inside the workspace (the cockpit
-bundles it from source, the service's tests import it) and stays unpublished
-until its surface stops moving: it still carries the hand-written DTOs, which
-shrink family by family as routes are converted, so publishing now would
-advertise a contract that changes materially every release. Publishing it is one
+**Private ≠ excluded.** A private package is stamped like everything else — its
+version moves in lockstep and every pin against it is rewritten — it is
+simply never handed to npm. Leaving one behind is what made a version-bump
+commit fail `npm ci` (#35): consumers demanded `^<new>` while the unstamped
+manifest still said `<old>`, so npm fell through to the registry and missed.
+
+The api-client is consumed inside the workspace (the cockpit bundles it from
+source, the service's tests import it) and stays unpublished until its surface
+stops moving: it still carries the hand-written DTOs, which shrink family by
+family as routes are converted, so publishing now would advertise a contract
+that changes materially every release. Publishing a private package is one
 line — delete `"private": true` from its manifest; the release code reads npm's
 own flag and needs no change. Note the token requirement in step 2 below before
 doing so.

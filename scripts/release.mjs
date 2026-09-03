@@ -36,7 +36,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isPublishable } from '../packages/cezar/dist/release/manifests.js';
+import { isPublishable, RELEASE_MANIFEST_DIRS } from '../packages/cezar/dist/release/manifests.js';
 import {
   computeStableVersion,
   isReleaseBump,
@@ -46,13 +46,11 @@ import {
 const repoRoot = process.env.CEZ_RELEASE_ROOT
   ? path.resolve(process.env.CEZ_RELEASE_ROOT)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// The workspace root publishes nothing; every publishable manifest is named here explicitly.
-const dirs = {
-  contract: path.join(repoRoot, 'packages/contract'),
-  apiClient: path.join(repoRoot, 'packages/api-client'),
-  cezar: path.join(repoRoot, 'packages/cezar'),
-  alias: path.join(repoRoot, 'alias-cezarion'),
-};
+// The workspace root publishes nothing; every stamped manifest is named by RELEASE_MANIFEST_DIRS.
+const order = Object.keys(RELEASE_MANIFEST_DIRS);
+const dirs = Object.fromEntries(
+  Object.entries(RELEASE_MANIFEST_DIRS).map(([key, rel]) => [key, path.join(repoRoot, rel)]),
+);
 
 const readManifest = (dir) => JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
 const writeManifest = (dir, pkg) =>
@@ -72,12 +70,7 @@ if (!isReleaseBump(bump)) {
   process.exit(1);
 }
 
-const manifests = {
-  contract: readManifest(dirs.contract),
-  apiClient: readManifest(dirs.apiClient),
-  cezar: readManifest(dirs.cezar),
-  alias: readManifest(dirs.alias),
-};
+const manifests = Object.fromEntries(order.map((key) => [key, readManifest(dirs[key])]));
 
 // The service manifest is the base: it is the package whose version the release is named after.
 const version = computeStableVersion(bump, manifests.cezar.version);
@@ -97,8 +90,8 @@ if (!dryRun && !token) {
 }
 
 const stamped = stampStableManifests(manifests, version);
-for (const key of ['contract', 'apiClient', 'cezar', 'alias']) writeManifest(dirs[key], stamped[key]);
-const stampedNames = ['contract', 'apiClient', 'cezar', 'alias'].map((key) => stamped[key].name);
+for (const key of order) writeManifest(dirs[key], stamped[key]);
+const stampedNames = order.map((key) => stamped[key].name);
 console.log(
   `release: stamped ${stampedNames.join(' + ')} to ${version} (bump ${bump}, dist-tag latest${dryRun ? ', dry run' : ''})`,
 );
@@ -133,7 +126,7 @@ const publish = (dir, label) => {
 // exactly this reason. A `private` manifest is stamped above but never published: it is part of
 // the release (its version moves, its pins are rewritten) without being on the registry.
 const published = [];
-for (const key of ['contract', 'apiClient', 'cezar', 'alias']) {
+for (const key of order) {
   if (!isPublishable(stamped[key])) {
     console.log(`release: ${stamped[key].name} is private — stamped to ${version}, not published.`);
     continue;
