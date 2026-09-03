@@ -15,6 +15,8 @@
 #             imports as missing/unknown and a cached build cannot start without node_modules.
 #   2026-07-30 execute the compound preparation chain through sh -c and stop requiring an
 #             api-client dist artifact that this source-aliased workspace does not produce.
+#   2026-09-03 log every try_reuse bail-out: a refused reuse still exits 0, so silent
+#             returns left the next failure undiagnosable (#31).
 set -eu
 
 # ---- project-specific parameters -------------------------------------------
@@ -156,23 +158,25 @@ EOF
 }
 
 try_reuse() {
-  [ "$FORCE" = 1 ] && return 1
-  [ -f "$ENV_DESCRIPTOR" ] || return 1
-  [ "$(json_get "$ENV_DESCRIPTOR" status)" = running ] || return 1
+  # Every bail-out logs its reason: a refused reuse cold-boots with exit 0, so a
+  # caller that only checks TEST_ENV_REUSED would otherwise never learn why (#31).
+  [ "$FORCE" = 1 ] && { log "not reusing: --force was passed"; return 1; }
+  [ -f "$ENV_DESCRIPTOR" ] || { log "not reusing: no descriptor at $ENV_DESCRIPTOR"; return 1; }
+  [ "$(json_get "$ENV_DESCRIPTOR" status)" = running ] || { log "not reusing: descriptor status is not running"; return 1; }
 
   pid=$(json_get "$ENV_DESCRIPTOR" app.pid)
   url=$(json_get "$ENV_DESCRIPTOR" baseUrl)
   started=$(json_get "$ENV_DESCRIPTOR" startedAt)
   requested_single_project=false
   [ "${CEZ_SINGLE_PROJECT:-}" = 1 ] && requested_single_project=true
-  [ "$(json_get "$ENV_DESCRIPTOR" environment.singleProject)" = "$requested_single_project" ] || return 1
-  [ -n "$pid" ] && [ -n "$url" ] || return 1
+  [ "$(json_get "$ENV_DESCRIPTOR" environment.singleProject)" = "$requested_single_project" ] || { log "not reusing: single-project mode changed"; return 1; }
+  { [ -n "$pid" ] && [ -n "$url" ]; } || { log "not reusing: descriptor has no app pid or base URL"; return 1; }
   # A state file is a claim, not proof: the PID must still be alive…
-  kill -0 "$pid" 2>/dev/null || return 1
+  kill -0 "$pid" 2>/dev/null || { log "not reusing: app pid $pid is gone"; return 1; }
   # …and the app must actually answer. Health first (deep: reads config + git),
   # then the app shell, which is what the e2e specs actually load.
-  http_ok "$url$HEALTH_PATH" || return 1
-  http_ok "$url/" || return 1
+  http_ok "$url$HEALTH_PATH" || { log "not reusing: $url$HEALTH_PATH is not answering"; return 1; }
+  http_ok "$url/" || { log "not reusing: $url/ is not answering"; return 1; }
 
   # Fresh: within TTL and no tracked source newer than startedAt.
   if [ -n "$started" ]; then
