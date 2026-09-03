@@ -92,9 +92,8 @@ export function useContinueAction(run: ApiRun): ContinueAction {
   const effortOptions = effortOptionsForModel(runner, model, catalog.data)
   const rawEffort = modelsLocked ? '' : (pickedEffort ?? run.effort ?? '')
   const effort = resolveEffort(rawEffort, effortOptions)
-  const engineChanged = pickedModel !== null || continuation.runnerOverride !== undefined
   const mustClearStoredEffort =
-    !modelsLocked && pickedEffort === null && engineChanged && rawEffort !== '' && effort === ''
+    !modelsLocked && pickedEffort === null && rawEffort !== '' && effort === ''
 
   // Agent accounts (spec 2026-07-29-agent-profiles): rows of the RUNNER pill, exactly as the /new
   // composer offers them — `claude · Default` / `claude · Klaudiusz` / `codex`. Without them a

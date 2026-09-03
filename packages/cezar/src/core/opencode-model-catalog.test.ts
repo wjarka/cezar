@@ -271,6 +271,22 @@ describe('parseOpencodeModels', () => {
     ]);
   });
 
+  it('upgrades an incomplete duplicate with the first later usable metadata', () => {
+    expect(parseOpencodeModels([
+      'openai/gpt-5.4',
+      '{ malformed',
+      'openai/gpt-5.4',
+      JSON.stringify({ variants: { high: {}, xhigh: {} } }),
+      'openai/gpt-5.4',
+      JSON.stringify({ variants: { max: {} } }),
+    ].join('\n'))).toEqual([{
+      id: 'openai/gpt-5.4',
+      label: 'openai/gpt-5.4',
+      description: 'via openai',
+      effortLevels: ['high', 'xhigh'],
+    }]);
+  });
+
   it('drops duplicates, blank lines and anything that is not a provider/model id', () => {
     expect(
       parseOpencodeModels(

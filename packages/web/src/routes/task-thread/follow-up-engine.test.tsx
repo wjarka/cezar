@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -86,7 +86,7 @@ function serve(
   modelsLocked = false,
   /** Agent accounts (spec 2026-07-29-agent-profiles); omitted answers the zero-config host. */
   agentProfiles?: AgentProfilesResponse,
-  modelCatalog: unknown = {
+  modelCatalog: unknown | (() => Promise<Response>) = {
     runner: 'codex',
     models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }],
     source: 'live',
@@ -105,7 +105,9 @@ function serve(
       requests.push({ method, url, body })
       if (url === '/api/v1/health') return json(health)
       if (url === '/api/v1/providers/status') return json(providerStatus, providerStatusCode)
-      if (url === '/api/v1/models?runner=codex') return json(modelCatalog)
+      if (url === '/api/v1/models?runner=codex') {
+        return typeof modelCatalog === 'function' ? modelCatalog() : json(modelCatalog)
+      }
       if (url === '/api/v1/config' && method === 'GET')
         return json({
           baseBranch: null,
@@ -223,6 +225,37 @@ describe('follow-up ContinueAction runner/model selection (#401)', () => {
     fireEvent.click(screen.getByRole('button', { name: /continue/i }))
     await waitFor(() => expect(continueBody()).toBeDefined())
     expect(continueBody()).toEqual({})
+  })
+
+  it('clears an inherited effort when delayed metadata makes it unsupported', async () => {
+    let release!: (response: Response) => void
+    const pendingCatalog = () => new Promise<Response>((resolve) => { release = resolve })
+    serve(
+      HEALTH_MULTI,
+      {},
+      providersForHealth(HEALTH_MULTI),
+      200,
+      false,
+      undefined,
+      pendingCatalog,
+    )
+    renderAction(makeRun({ runner: 'codex', model: 'gpt-wide', effort: 'xhigh' }))
+
+    const effort = await screen.findByRole('button', { name: 'Effort' })
+    expect(effort.textContent).toContain('xhigh')
+    await act(async () => {
+      release(new Response(JSON.stringify({
+        runner: 'codex',
+        models: [{ id: 'gpt-wide', label: 'gpt-wide', description: '', effortLevels: ['low'] }],
+        source: 'live',
+        stale: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    })
+    await waitFor(() => expect(effort.textContent).toContain('auto'))
+
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await waitFor(() => expect(continueBody()).toBeDefined())
+    expect(continueBody()).toEqual({ effort: '' })
   })
 
   it('clears an inherited effort when a model change makes it unsupported', async () => {

@@ -128,13 +128,20 @@ export function parseOpencodeModels(stdout: string): ModelOption[] {
   }
 
   const models: ModelOption[] = [];
-  const ids = new Set<string>();
+  const indexes = new Map<string, number>();
   for (const segment of segments) {
-    if (ids.has(segment.id)) continue;
-    if (models.length >= MAX_MODELS) throw new Error('OpenCode model discovery exceeded the size limit');
-    ids.add(segment.id);
-    const provider = segment.id.slice(0, segment.id.indexOf('/'));
     const effortLevels = effortLevelsFromMetadata(segment.metadata);
+    const existingIndex = indexes.get(segment.id);
+    if (existingIndex !== undefined) {
+      const existing = models[existingIndex]!;
+      if (!existing.effortLevels && effortLevels) {
+        models[existingIndex] = { ...existing, effortLevels };
+      }
+      continue;
+    }
+    if (models.length >= MAX_MODELS) throw new Error('OpenCode model discovery exceeded the size limit');
+    const provider = segment.id.slice(0, segment.id.indexOf('/'));
+    indexes.set(segment.id, models.length);
     models.push({
       id: segment.id,
       label: segment.id,

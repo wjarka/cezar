@@ -92,6 +92,35 @@ const TABLE = [
   'xai           grok-4.6             500K     500K     yes       yes   ',
 ].join('\n');
 
+const BASE_MODELS = [
+  { id: 'llama-home/qwen3.8-27b-q4_k_m', label: 'qwen3.8-27b-q4_k_m', description: 'via llama-home' },
+  { id: 'openai-codex/gpt-5.4', label: 'gpt-5.4', description: 'via openai-codex' },
+  { id: 'xai/grok-4.6', label: 'grok-4.6', description: 'via xai' },
+];
+
+function discoverWithRpc(
+  script: (rpc: ReturnType<typeof fakeChild>) => void,
+  timeoutMs = 50,
+) {
+  const base = fakeChild();
+  const rpc = fakeChild();
+  let spawns = 0;
+  const promise = discoverPiModels({
+    cwd: '/repo',
+    timeoutMs,
+    spawn: () => {
+      spawns += 1;
+      if (spawns === 2) queueMicrotask(() => script(rpc));
+      return spawns === 1 ? base.child : rpc.child;
+    },
+  });
+  queueMicrotask(() => {
+    base.say(`${TABLE}\n`);
+    base.close(0);
+  });
+  return { promise, rpc };
+}
+
 describe('parsePiModels', () => {
   it('skips the header row and returns provider/model ids from the table', () => {
     expect(parsePiModels(TABLE)).toEqual([
@@ -228,6 +257,36 @@ describe('discoverPiModels', () => {
       { id: 'set:2', type: 'set_model', provider: 'xai', modelId: 'grok-4.6' },
       { id: 'levels:2', type: 'get_available_thinking_levels' },
     ]);
+  });
+
+  it('degrades an asynchronous RPC stdin error to the intact base list', async () => {
+    const { promise, rpc } = discoverWithRpc((child) => {
+      child.child.stdin.emit('error', new Error('EPIPE'));
+    });
+    await expect(promise).resolves.toEqual(BASE_MODELS);
+    expect(rpc.killed()).toBe(true);
+  });
+
+  it('bounds a stalled RPC child and escalates teardown without losing base models', async () => {
+    vi.useFakeTimers();
+    try {
+      const { promise, rpc } = discoverWithRpc(() => {}, 5);
+      await vi.advanceTimersByTimeAsync(5);
+      await expect(promise).resolves.toEqual(BASE_MODELS);
+      expect(rpc.signals).toEqual(['SIGTERM']);
+      await vi.advanceTimersByTimeAsync(KILL_GRACE_MS);
+      expect(rpc.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds RPC stdout without losing base models', async () => {
+    const { promise, rpc } = discoverWithRpc((child) => {
+      child.say('x'.repeat(512 * 1_024 + 1));
+    });
+    await expect(promise).resolves.toEqual(BASE_MODELS);
+    expect(rpc.killed()).toBe(true);
   });
 
   it('lists what the host CLI printed when RPC enrichment fails', async () => {

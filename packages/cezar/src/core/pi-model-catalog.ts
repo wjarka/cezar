@@ -54,36 +54,44 @@ export async function discoverPiModels(options: PiModelDiscoveryOptions): Promis
   const spawn = options.spawn ?? spawnPi;
   const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS);
   const listChild = spawn(bin, ['--list-models'], options.cwd);
-  listChild.stdin.end();
-  const listOutput = await collectPiOutput(
+  const listOutputPromise = collectPiOutput(
     listChild,
     Math.max(1, deadline - Date.now()),
     'Pi model discovery',
   );
+  listChild.stdin.end();
+  const listOutput = await listOutputPromise;
   const models = parsePiModels(listOutput);
   if (models.length === 0 || Date.now() >= deadline) return models;
 
   try {
     const rpcChild = spawn(bin, RPC_ARGS, options.cwd);
-    models.forEach((model, index) => {
-      const slash = model.id.indexOf('/');
-      rpcChild.stdin.write(`${JSON.stringify({
-        id: `set:${index}`,
-        type: 'set_model',
-        provider: model.id.slice(0, slash),
-        modelId: model.id.slice(slash + 1),
-      })}\n`);
-      rpcChild.stdin.write(`${JSON.stringify({
-        id: `levels:${index}`,
-        type: 'get_available_thinking_levels',
-      })}\n`);
-    });
-    rpcChild.stdin.end();
-    const output = await collectPiOutput(
+    const outputPromise = collectPiOutput(
       rpcChild,
       Math.max(1, deadline - Date.now()),
       'Pi effort discovery',
     );
+    try {
+      models.forEach((model, index) => {
+        const slash = model.id.indexOf('/');
+        rpcChild.stdin.write(`${JSON.stringify({
+          id: `set:${index}`,
+          type: 'set_model',
+          provider: model.id.slice(0, slash),
+          modelId: model.id.slice(slash + 1),
+        })}\n`);
+        rpcChild.stdin.write(`${JSON.stringify({
+          id: `levels:${index}`,
+          type: 'get_available_thinking_levels',
+        })}\n`);
+      });
+      rpcChild.stdin.end();
+    } catch (error) {
+      rpcChild.stdin.destroy();
+      await outputPromise.catch(() => undefined);
+      throw error;
+    }
+    const output = await outputPromise;
     const levels = parsePiEffortLevels(output, models.length);
     return models.map((model, index) => {
       const effortLevels = levels.get(index);
@@ -122,6 +130,7 @@ async function collectPiOutput(
         if (stdout.length > MAX_OUTPUT_CHARS) fail(`${label} exceeded the output limit`);
       });
       child.stderr.resume();
+      child.stdin.once('error', () => fail(`${label} stdin failed`));
       child.once('error', () => fail(`${label} child failed`));
       child.once('close', (code) => {
         if (settled) return;
