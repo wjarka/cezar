@@ -63,7 +63,6 @@ export class PiRunner implements AgentRunner {
       env: buildChildEnv({ backend: this.backend, extraEnv: spec.env }),
     });
     let open = true;
-    let settled = true;
     let timedOut = false;
     let autoEndTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
@@ -135,15 +134,16 @@ export class PiRunner implements AgentRunner {
           type: 'prompt',
           message,
           ...(images.length > 0 ? { images } : {}),
-          ...(!settled ? { streamingBehavior: 'steer' } : {}),
+          ...(piUi.turnId ? { streamingBehavior: 'steer' } : {}),
         })
       ) {
         return false;
       }
-      const mapped = piTurnStarted(piUi);
-      piUi = mapped.state;
-      for (const event of mapped.events) opts.onUiEvent?.(event);
-      settled = false;
+      if (!piUi.turnId) {
+        const mapped = piTurnStarted(piUi);
+        piUi = mapped.state;
+        for (const event of mapped.events) opts.onUiEvent?.(event);
+      }
       return true;
     };
     const end = (): void => {
@@ -256,7 +256,6 @@ export class PiRunner implements AgentRunner {
             }
           } else if (value.type === 'agent_settled') {
             flushText();
-            settled = true;
             onEvent?.({ type: 'turn-end' });
             if (opts.autoEndAfterFirstTurn && open && !autoEndTimer) {
               autoEndTimer = setTimeout(end, AUTO_END_DELAY_MS);
@@ -288,7 +287,7 @@ export class PiRunner implements AgentRunner {
         onEvent?.({ type: 'error', message });
         throw new Error(message);
       }
-      if (!settled) onEvent?.({ type: 'note', message: 'pi RPC session ended before agent_settled' });
+      if (piUi.turnId) onEvent?.({ type: 'note', message: 'pi RPC session ended before agent_settled' });
       if (tokensUsed === 0) onEvent?.({ type: 'note', message: 'token usage not reported by pi CLI' });
       opts.onUiEvent?.({ type: 'session.ended', reason: piUi.stopReason });
       onEvent?.({ type: 'done' });

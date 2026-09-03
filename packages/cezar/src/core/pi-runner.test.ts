@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { AgentEvent } from './agent-runner.js';
+import type { AgentEvent, AgentSession } from './agent-runner.js';
 import type { UiEvent } from './ui-events.js';
 import { buildChildEnv } from './agent-env.js';
 import { parseAskMarker } from './ask.js';
@@ -295,6 +295,65 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     let turnText = '';
     for (const event of textEvents) turnText = appendTurnText(turnText, event.text);
     expect(turnText).toBe(full);
+  });
+
+  it('steers a follow-up into an autonomously resumed turn without opening another normalized turn', async () => {
+    const mockPath = join(cwd, 'mock-pi-autonomous-follow-up.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+let prompts = 0;
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'autonomous-follow-up' } });
+  } else if (command.type === 'prompt' && ++prompts === 1) {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_settled' });
+    setTimeout(() => {
+      send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+      send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'autonomous work', partial: {} } });
+      send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'autonomous work', partial: {} } });
+    }, 20);
+  } else if (command.type === 'prompt') {
+    writeFileSync('follow-up.json', JSON.stringify(command));
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const uiEvents: UiEvent[] = [];
+    let session: AgentSession | undefined;
+    let followUpSent = false;
+    session = new PiRunner({ bin: mockPath }).startSession(
+      { userPrompt: 'start', cwd, timeoutMs: 10_000 },
+      undefined,
+      {
+        autoEndAfterFirstTurn: true,
+        onUiEvent: (event) => {
+          uiEvents.push(event);
+          if (event.type !== 'item.delta' || event.delta !== 'autonomous work' || followUpSent) return;
+          followUpSent = session?.sendMessage([{ type: 'text', text: 'user follow-up' }]) ?? false;
+        },
+      },
+    );
+    await session.result;
+
+    const followUp = JSON.parse(readFileSync(join(cwd, 'follow-up.json'), 'utf8')) as Record<string, unknown>;
+    expect(followUpSent).toBe(true);
+    expect(followUp).toMatchObject({ type: 'prompt', message: 'user follow-up', streamingBehavior: 'steer' });
+    expect(uiEvents.filter((event) => event.type === 'turn.started').map((event) => event.turnId)).toEqual([
+      'turn_1',
+      'turn_2',
+    ]);
   });
 });
 
