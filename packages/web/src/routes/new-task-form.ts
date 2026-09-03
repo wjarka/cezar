@@ -113,11 +113,16 @@ export function effortOptionsForModel(
     : undefined
   if (!levels?.length) return EFFORT_OPTIONS
 
-  const allowed = new Set(levels)
-  const filtered = EFFORT_OPTIONS.filter(
-    (option) => option.value === '' || allowed.has(option.value),
-  )
-  return filtered.length > 1 ? filtered : EFFORT_OPTIONS
+  const options: EffortOption[] = [EFFORT_OPTIONS[0]]
+  const seen = new Set<string>()
+  for (const level of levels) {
+    if (seen.has(level)) continue
+    const option = EFFORT_OPTIONS.find((candidate) => candidate.value === level)
+    if (!option) continue
+    seen.add(level)
+    options.push(option)
+  }
+  return options.length > 1 ? options : EFFORT_OPTIONS
 }
 
 /** Resolve stale or inherited effort through the same options the picker displays. */

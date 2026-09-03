@@ -183,7 +183,7 @@ describe('effort option resolution (#55)', () => {
         id: 'zai/glm-5.3',
         label: 'GLM 5.3',
         description: '',
-        effortLevels: ['low', 'high', 'max'],
+        effortLevels: ['max', 'low', 'high'],
       },
       { id: 'openai/legacy', label: 'Legacy', description: '' },
       { id: 'openai/empty', label: 'Empty', description: '', effortLevels: [] },
@@ -195,7 +195,7 @@ describe('effort option resolution (#55)', () => {
 
   it('offers auto plus exactly the selected model levels in backend order', () => {
     expect(effortOptionsForModel('opencode', 'zai/glm-5.3', catalog).map((option) => option.value))
-      .toEqual(['', 'low', 'high', 'max'])
+      .toEqual(['', 'max', 'low', 'high'])
     expect(effortOptionsForModel('opencode', 'openai/gpt-5.4', catalog).map((option) => option.value))
       .toEqual(['', 'low', 'medium', 'high', 'xhigh'])
   })
