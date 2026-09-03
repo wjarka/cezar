@@ -55,9 +55,11 @@ Reload the public tunnel with the standardized command:
 npx cezarion server-deploy --platform macosx-ngrok
 ```
 
-`server-deploy` restarts the ngrok launchd agent and re-verifies the basic-auth
-gate. On macOS cezar itself runs locally — restart it the way you launched it;
-`server-deploy` reloads the tunnel that fronts it.
+`server-deploy` restarts the cezar cockpit and ngrok launchd agents and
+re-verifies the basic-auth gate. When the cockpit was installed through npx,
+it also clears the cached `cezarion` build under `~/.npm/_npx` first so the
+kickstart fetches the newly published version instead of re-execing the old
+one. A checkout or global-bin agent is left alone.
 
 To change the setup itself, the installer is idempotent:
 
