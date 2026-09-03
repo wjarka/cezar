@@ -328,13 +328,14 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       { mode: 0o755 },
     );
 
+    const events: AgentEvent[] = [];
     const uiEvents: UiEvent[] = [];
     let session: AgentSession | undefined;
     let activeFollowUpSent = false;
     let freshFollowUpScheduled = false;
     session = new PiRunner({ bin: mockPath }).startSession(
-      { userPrompt: 'start', cwd, timeoutMs: 10_000 },
-      undefined,
+      { userPrompt: 'start', cwd, timeoutMs: 2_000 },
+      (event) => events.push(event),
       {
         autoEndAfterFirstTurn: true,
         onUiEvent: (event) => {
@@ -352,6 +353,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
 
     const activeFollowUp = JSON.parse(readFileSync(join(cwd, 'active-follow-up.json'), 'utf8')) as Record<string, unknown>;
     const freshFollowUp = JSON.parse(readFileSync(join(cwd, 'fresh-follow-up.json'), 'utf8')) as Record<string, unknown>;
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
     expect(activeFollowUp).toMatchObject({ streamingBehavior: 'steer' });
     expect(freshFollowUp).not.toHaveProperty('streamingBehavior');
     expect(uiEvents.filter((event) => event.type === 'turn.started').map((event) => event.turnId)).toEqual([
@@ -429,14 +432,15 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       `#!/usr/bin/env node
 import readline from 'node:readline';
 const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+const exitAfter = (v) => process.stdout.write(JSON.stringify(v) + '\\n', () => process.exit(0));
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const command = JSON.parse(line);
   if (command.type === 'get_state') {
     send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'exit-state' } });
   } else if (command.type === 'prompt') {
-    send({ type: 'response', command: 'prompt', success: true });
-    ${settles ? "send({ type: 'agent_settled' });" : ''}
-    setTimeout(() => process.exit(0), 10);
+    ${settles
+      ? "send({ type: 'response', command: 'prompt', success: true });\n    exitAfter({ type: 'agent_settled' });"
+      : "exitAfter({ type: 'response', command: 'prompt', success: true });"}
   }
 }
 `,
