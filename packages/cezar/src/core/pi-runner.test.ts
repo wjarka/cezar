@@ -297,6 +297,69 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     expect(turnText).toBe(full);
   });
 
+  it('steers an active turn, starts one fresh turn after settlement, and auto-ends', async () => {
+    const mockPath = join(cwd, 'mock-pi-active-and-fresh-follow-ups.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'follow-up-states' } });
+  } else if (command.type === 'prompt' && command.message === 'start') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'working', partial: {} } });
+  } else if (command.type === 'prompt' && command.message === 'during active turn') {
+    writeFileSync('active-follow-up.json', JSON.stringify(command));
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'prompt') {
+    writeFileSync('fresh-follow-up.json', JSON.stringify(command));
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const uiEvents: UiEvent[] = [];
+    let session: AgentSession | undefined;
+    let activeFollowUpSent = false;
+    let freshFollowUpScheduled = false;
+    session = new PiRunner({ bin: mockPath }).startSession(
+      { userPrompt: 'start', cwd, timeoutMs: 10_000 },
+      undefined,
+      {
+        autoEndAfterFirstTurn: true,
+        onUiEvent: (event) => {
+          uiEvents.push(event);
+          if (event.type === 'item.delta' && event.delta === 'working' && !activeFollowUpSent) {
+            activeFollowUpSent = session?.sendMessage([{ type: 'text', text: 'during active turn' }]) ?? false;
+          } else if (event.type === 'turn.completed' && event.turnId === 'turn_1' && !freshFollowUpScheduled) {
+            freshFollowUpScheduled = true;
+            setTimeout(() => session?.sendMessage([{ type: 'text', text: 'after settled turn' }]), 0);
+          }
+        },
+      },
+    );
+    await session.result;
+
+    const activeFollowUp = JSON.parse(readFileSync(join(cwd, 'active-follow-up.json'), 'utf8')) as Record<string, unknown>;
+    const freshFollowUp = JSON.parse(readFileSync(join(cwd, 'fresh-follow-up.json'), 'utf8')) as Record<string, unknown>;
+    expect(activeFollowUp).toMatchObject({ streamingBehavior: 'steer' });
+    expect(freshFollowUp).not.toHaveProperty('streamingBehavior');
+    expect(uiEvents.filter((event) => event.type === 'turn.started').map((event) => event.turnId)).toEqual([
+      'turn_1',
+      'turn_2',
+    ]);
+  });
+
   it('steers a follow-up into an autonomously resumed turn without opening another normalized turn', async () => {
     const mockPath = join(cwd, 'mock-pi-autonomous-follow-up.mjs');
     writeFileSync(
@@ -354,6 +417,39 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       'turn_1',
       'turn_2',
     ]);
+  });
+
+  it.each([
+    { settles: false, expectsNote: true },
+    { settles: true, expectsNote: false },
+  ])('reports early process exit according to mapper settlement state: $settles', async ({ settles, expectsNote }) => {
+    const mockPath = join(cwd, `mock-pi-exit-${settles ? 'settled' : 'active'}.mjs`);
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'exit-state' } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    ${settles ? "send({ type: 'agent_settled' });" : ''}
+    setTimeout(() => process.exit(0), 10);
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const events: AgentEvent[] = [];
+    await new PiRunner({ bin: mockPath }).startSession(
+      { userPrompt: 'start', cwd, timeoutMs: 10_000 },
+      (event) => events.push(event),
+    ).result;
+
+    expect(events.some((event) => event.type === 'note' && event.message === 'pi RPC session ended before agent_settled')).toBe(expectsNote);
   });
 });
 
