@@ -195,11 +195,19 @@ On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
    - Repository: `cezar`
    - Workflow filename: `release.yml` (filename only, including the extension)
    - Environment name: `production` (must match `release.yml`'s `environment:`)
-   - Allowed actions: `npm publish`
+    - Allowed actions: `npm publish`
    npm does not verify this form when you save it; a mismatch only shows up as
-   `ENEEDAUTH` on the next stable release. Configure both packages **before**
-   the next `Release` run — that job no longer carries a token, so a missing
-   publisher is a failed publish, not a dry run.
+   `E404` (`404 Not Found - PUT https://registry.npmjs.org/<name> - Not found`)
+   on the next stable release, not `ENEEDAUTH`. The package can already exist;
+   npm still answers 404 when this workflow is not a trusted publisher for it.
+   Configure both packages **before** the next `Release` run — that job no
+   longer carries a token, so a missing publisher is a failed publish, not a
+   dry run. A mid-set failure is recoverable: re-dispatch the **same** bump
+   (`patch` if that is what failed). Already-published `name@version` pairs
+   are skipped so the remaining name, the GitHub Release, and the bump PR can
+   finish. Do not dispatch `existing` while git still holds the pre-bump
+   version — that republishes the old version, not the one already on the
+   scoped name.
 3. Keep a **granular access token** for the channels OIDC cannot cover
    (snapshots, nightlies, `npm dist-tag rm`). *Read and write*, **selected
    packages** `cezarion` and `@wjarka/cezarion` only — both names exist, so

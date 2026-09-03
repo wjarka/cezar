@@ -33,6 +33,12 @@
 // command. The workflow reads `version`/`published` from $GITHUB_OUTPUT to
 // tag the commit and cut the GitHub Release only on a real publish.
 //
+// A mid-set failure (one name on the registry, the next not) is recoverable:
+// re-dispatch the same bump. An already-published name@version is treated as
+// success so the remaining names, the GitHub Release, and the bump PR can
+// finish (#42). A missing trusted publisher still fails — npm reports that as
+// E404, not ENEEDAUTH, and the version is not on the registry.
+//
 // Usage: node scripts/release.mjs <patch|minor|major|existing> [--dry-run]
 // Env override for tests: CEZ_RELEASE_ROOT (defaults to the repo root).
 
@@ -112,12 +118,28 @@ console.log(
 const provenance = !dryRun && process.env.GITHUB_ACTIONS === 'true' && token ? ['--provenance'] : [];
 // Same cross-platform npm resolution as scripts/release-snapshot.mjs.
 const npmExecpath = process.env.npm_execpath;
-const runNpm = (args, cwd) => {
+const runNpm = (args, cwd, capture = false) => {
+  const stdio = capture ? ['ignore', 'pipe', 'pipe'] : 'inherit';
+  const encoding = capture ? 'utf8' : undefined;
   if (npmExecpath) {
-    execFileSync(process.execPath, [npmExecpath, ...args], { cwd, stdio: 'inherit' });
-  } else {
-    const npmCli = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    execFileSync(npmCli, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
+    const out = execFileSync(process.execPath, [npmExecpath, ...args], { cwd, stdio, encoding });
+    return capture ? String(out ?? '') : undefined;
+  }
+  const npmCli = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const out = execFileSync(npmCli, args, {
+    cwd,
+    stdio,
+    encoding,
+    shell: process.platform === 'win32',
+  });
+  return capture ? String(out ?? '') : undefined;
+};
+const versionOnRegistry = (name, ver) => {
+  try {
+    const out = runNpm(['view', `${name}@${ver}`, 'version'], repoRoot, true);
+    return (out ?? '').trim() === ver;
+  } catch {
+    return false;
   }
 };
 const publish = (dir, label) => {
@@ -142,8 +164,18 @@ for (const key of order) {
     console.log(`release: ${stamped[key].name} is private — stamped to ${version}, not published.`);
     continue;
   }
-  publish(dirs[key], stamped[key].name);
-  published.push(stamped[key].name);
+  const name = stamped[key].name;
+  try {
+    publish(dirs[key], name);
+    published.push(name);
+  } catch (err) {
+    if (!dryRun && versionOnRegistry(name, version)) {
+      console.log(`release: ${name}@${version} already on the registry — skipping`);
+      published.push(name);
+      continue;
+    }
+    throw err;
+  }
 }
 
 emitOutput({
