@@ -24,10 +24,14 @@
 // dist/ must exist for this script to even import. Stamping only rewrites the
 // version field, so no rebuild is needed.
 //
-// Degrades loudly, never red: NPM_TOKEN missing → forces --dry-run so a
+// Degrades loudly, never red: no npm token AND no OIDC → forces --dry-run so a
 // misconfigured repo produces a visible dry run instead of a failed release.
-// The workflow reads `version`/`published` from $GITHUB_OUTPUT to tag the
-// commit and cut the GitHub Release only on a real publish.
+// `release.yml` publishes through npm trusted publishing (#33): the job has
+// `id-token: write` and no NODE_AUTH_TOKEN, and the CLI exchanges the OIDC
+// token itself. Snapshots, nightlies, and dist-tag cleanup keep NPM_TOKEN —
+// one trusted publisher per package, and `npm dist-tag rm` is not an OIDC
+// command. The workflow reads `version`/`published` from $GITHUB_OUTPUT to
+// tag the commit and cut the GitHub Release only on a real publish.
 //
 // Usage: node scripts/release.mjs <patch|minor|major|existing> [--dry-run]
 // Env override for tests: CEZ_RELEASE_ROOT (defaults to the repo root).
@@ -83,7 +87,13 @@ if (!version) {
 
 let dryRun = process.argv.includes('--dry-run');
 const token = process.env.NODE_AUTH_TOKEN ?? '';
-if (!dryRun && !token) {
+// GitHub Actions sets both when the job has `id-token: write`. npm 11.5.1+
+// exchanges them for a short-lived publish token; an empty NODE_AUTH_TOKEN
+// on that path is intentional, not a missing secret.
+const oidc = Boolean(
+  process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+);
+if (!dryRun && !token && !oidc) {
   console.log('release: NPM_TOKEN is not configured — forcing --dry-run.');
   console.log('release: see docs/publishing.md for the one-time admin setup.');
   dryRun = true;
@@ -96,9 +106,10 @@ console.log(
   `release: stamped ${stampedNames.join(' + ')} to ${version} (bump ${bump}, dist-tag latest${dryRun ? ', dry run' : ''})`,
 );
 
-// Provenance needs the job's OIDC token (permissions: id-token: write); only
-// meaningful for a real publish from Actions.
-const provenance = !dryRun && process.env.GITHUB_ACTIONS === 'true' ? ['--provenance'] : [];
+// Token publishes from Actions still need --provenance. Trusted publishing
+// generates provenance automatically; passing the flag on that path duplicates
+// it (npm docs, #33).
+const provenance = !dryRun && process.env.GITHUB_ACTIONS === 'true' && token ? ['--provenance'] : [];
 // Same cross-platform npm resolution as scripts/release-snapshot.mjs.
 const npmExecpath = process.env.npm_execpath;
 const runNpm = (args, cwd) => {

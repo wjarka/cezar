@@ -34,6 +34,31 @@ test('the version-bump commit stages every stamped manifest and a regenerated lo
   assert.match(bump, /git add[^\n]*package-lock\.json/, 'the regenerated lockfile must be staged');
 });
 
+test('the publish step has no npm credential and authenticates via OIDC', () => {
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
+  assert.match(workflow, /id-token: write/, 'trusted publishing needs the job OIDC token');
+  assert.match(workflow, /environment: production/, 'the trusted publisher is pinned to production');
+
+  const publish = step(job(workflow, 'release'), 'Publish release');
+  assert.doesNotMatch(
+    publish,
+    /NODE_AUTH_TOKEN:/,
+    'a stable release must not set NODE_AUTH_TOKEN; npm authenticates with the job OIDC token',
+  );
+  assert.doesNotMatch(publish, /secrets\.NPM_TOKEN/);
+});
+
+test('snapshots, nightlies, and dist-tag cleanup still pass NPM_TOKEN', () => {
+  const workflows = path.join(__dirname, '..', 'workflows');
+  for (const file of ['ci.yml', 'nightly.yml', 'npm-preview-cleanup.yml']) {
+    const source = fs.readFileSync(path.join(workflows, file), 'utf8');
+    assert.ok(
+      source.includes('NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}'),
+      `${file} must keep the token: OIDC cannot cover dist-tag rm, and one trusted publisher cannot cover three workflows`,
+    );
+  }
+});
+
 test('the GitHub Release body lists only packages that were actually published', () => {
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   const release = step(job(workflow, 'release'), 'Create GitHub Release');

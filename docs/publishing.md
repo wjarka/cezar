@@ -18,18 +18,36 @@ unchanged — and the private workspace packages keep their `@open-mercato/*`
 names because they never reach npm.
 
 How cezar reaches npm. Two paths, deliberately separate
-(spec: `.ai/specs/2026-07-18-npm-preview-publish.md`, issue #482):
+(spec: `.ai/specs/2026-07-18-npm-preview-publish.md`, issue #482), with
+two authentication methods (#33):
 
 - **Stable releases** (`latest`) are **owner-driven and manual**: a maintainer
   runs the [`Release`](../.github/workflows/release.yml) workflow from the
   Actions tab (`workflow_dispatch`) and picks the version bump. CI never moves
-  `latest` — a push to `main` publishes nothing.
+  `latest` — a push to `main` publishes nothing. The job authenticates with
+  **npm trusted publishing** (OIDC): no `NPM_TOKEN` in the job, provenance
+  attached automatically.
 - **Previews** are **CI-driven**: the `publish-snapshot` job in
   [`ci.yml`](../.github/workflows/ci.yml) publishes a snapshot of every package
   after a fully green `verify` run — on `develop` pushes and same-repo PRs only.
+  Authenticated with `NPM_TOKEN`.
 - **Nightlies** are **clock-driven**: [`nightly.yml`](../.github/workflows/nightly.yml)
   cuts `main`'s tip every night under the `nightly` dist-tag, so `npx cezarion@nightly`
   is always the trunk. Also runnable on demand from the Actions tab.
+  Authenticated with `NPM_TOKEN`.
+
+| Channel | Workflow | Authentication | Provenance |
+|---|---|---|---|
+| `latest` (stable) | `release.yml` (`production`) | OIDC trusted publisher — no npm credential in the job | automatic (do not pass `--provenance`) |
+| `pr-<N>`, `develop` | `ci.yml` `publish-snapshot` | `NPM_TOKEN` | `--provenance` |
+| `nightly` | `nightly.yml` | `NPM_TOKEN` | `--provenance` |
+| drop `pr-<N>` dist-tag | `npm-preview-cleanup.yml` | `NPM_TOKEN` (`npm dist-tag rm`; OIDC does not cover this command) | n/a |
+
+npm allows **one trusted publisher per package**. This repository publishes two
+packages from three workflows, so only the stable path is OIDC. Collapsing the
+three publish jobs into one reusable workflow would not lift that ceiling:
+npm validates the *calling* workflow filename (`job_workflow_ref`), not the
+called one.
 
 Every workspace manifest is in the release, always at the same version; two of
 them ship:
@@ -59,8 +77,9 @@ stops moving: it still carries the hand-written DTOs, which shrink family by
 family as routes are converted, so publishing now would advertise a contract
 that changes materially every release. Publishing a private package is one
 line — delete `"private": true` from its manifest; the release code reads npm's
-own flag and needs no change. Note the token requirement in step 2 below before
-doing so.
+own flag and needs no change. A newly public name still needs a first token
+publish (trusted publishers are configured on an existing package) and then
+its own trusted-publisher row plus a token grant — see the admin setup below.
 
 ## Stable releases
 
@@ -76,9 +95,12 @@ Run **Actions → Release → Run workflow** from `main` and choose a bump:
 The workflow verifies, builds, then `scripts/release.mjs` stamps every manifest
 (intra-release dependencies keep a **caret** range — stable follows compatible
 releases, unlike the exact-pinned snapshots), publishes them in dependency order
-with `--tag latest --provenance`, commits the bump, tags `v<version>`, and cuts a
-GitHub Release. It's gated behind the `production` environment, so a release can
-require reviewer approval. Without `NPM_TOKEN` it degrades to a loud dry run.
+with `--tag latest` (no `--provenance` — trusted publishing attaches it), commits
+the bump, tags `v<version>`, and cuts a GitHub Release. It's gated behind the
+`production` environment, so a release can require reviewer approval — and the
+trusted publisher on npmjs.com is pinned to that same environment name. Outside
+Actions, with neither `NODE_AUTH_TOKEN` nor the OIDC request env, the script
+degrades to a loud dry run.
 
 ## Nightlies
 
@@ -144,7 +166,8 @@ prereleases are inert).
 |---|---|
 | `packages/cezar/src/release/snapshot.ts` | pure decisions: channel/version/dist-tag, install lines (unit-tested) |
 | `packages/cezar/src/release/manifests.ts` | the shared stamper: which manifests exist, and how each pins the next (unit-tested) |
-| `scripts/release-snapshot.mjs` | orchestrator: stamps manifests, `npm publish --tag <channel> --provenance`, emits result JSON (`--dry-run` supported; e2e-tested) |
+| `scripts/release.mjs` | stable orchestrator: stamps manifests, `npm publish --tag latest` via OIDC, no `--provenance` (e2e-tested) |
+| `scripts/release-snapshot.mjs` | snapshot orchestrator: stamps manifests, `npm publish --tag <channel> --provenance` with `NPM_TOKEN`, emits result JSON (`--dry-run` supported; e2e-tested) |
 | `ci.yml` → `publish-snapshot` | gate (`needs: verify`), same-repo guard, provenance permissions, sticky PR comment, step summary |
 | `nightly.yml` | the 03:17 UTC cron + manual dispatch: main-only guard, "did main move?" check, full verify, then the same orchestrator with `CEZ_RELEASE_CHANNEL=nightly` |
 | `npm-preview-cleanup.yml` | dist-tag removal on PR close |
@@ -154,28 +177,35 @@ secrets, and `computeSnapshot` re-checks the head repo as defense in depth);
 the dist-tag is always explicit so a snapshot can never become `latest`;
 concurrency is non-cancellable so a publish never stops part-way through the
 set (and if it ever did, the alias — published last — is the one users install,
-so its tag only moves once everything below it is on the registry). **Without the `NPM_TOKEN` secret the job degrades to a loud dry
-run and stays green** — the pipeline is safe to merge before the admin setup
-below is done.
+so its tag only moves once everything below it is on the registry). **Without the `NPM_TOKEN` secret a snapshot or nightly degrades to a loud dry
+run and stays green** — those jobs still need the token (OIDC is only configured
+for `release.yml`). A stable release with no trusted publisher fails, it does
+not dry-run.
 
 ## One-time admin setup
 
 On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
 
-1. Neither package exists yet, so nothing has to be transferred — the **first
-   publish creates both**. A user scope belongs to the npm account of the same
-   name, so `@wjarka/*` needs no org and no team setup.
-2. Create a **granular access token**: *Read and write*, covering the
-   `@wjarka` scope **and** able to create the unscoped `cezarion` package; set
-   an expiry per your policy (CI fails loudly with `E401`/`E404`/`EOTP` when
-   it is wrong or lapses).
-   - "Able to create" is the load-bearing part: a token limited to *selected
-     packages* cannot **create** a new one, and npm reports that as a
-     misleading `E404 Not Found - PUT <name>` rather than a `403`. Since both
-     packages are new, grant the token **all packages**, or publish
-     `cezarion` once by hand first and then narrow the token.
-   - The same trap catches every package later added to the release set —
-     `@open-mercato/cezar-api-client` was the first to hit it upstream.
+1. Both published names already exist (`v0.11.0` created them). A user scope
+   belongs to the npm account of the same name, so `@wjarka/*` needs no org
+   and no team setup.
+2. For **each** of `@wjarka/cezarion` and `cezarion`: Settings → *Trusted
+   Publisher* → GitHub Actions, then:
+   - Organization or user: `wjarka`
+   - Repository: `cezar`
+   - Workflow filename: `release.yml` (filename only, including the extension)
+   - Environment name: `production` (must match `release.yml`'s `environment:`)
+   - Allowed actions: `npm publish`
+   npm does not verify this form when you save it; a mismatch only shows up as
+   `ENEEDAUTH` on the next stable release. Configure both packages **before**
+   the next `Release` run — that job no longer carries a token, so a missing
+   publisher is a failed publish, not a dry run.
+3. Keep a **granular access token** for the channels OIDC cannot cover
+   (snapshots, nightlies, `npm dist-tag rm`). *Read and write*, **selected
+   packages** `cezarion` and `@wjarka/cezarion` only — both names exist, so
+   "all packages" / "able to create" is no longer needed. Set an expiry per
+   your policy (CI fails loudly with `E401`/`E404`/`EOTP` when it is wrong
+   or lapses).
    - **Tick "Bypass two-factor authentication (2FA)"** under the token's
      *Security settings*. A granular token is NOT exempt from 2FA by default —
      the bypass is an explicit opt-in checkbox, and without it an account that
@@ -190,21 +220,29 @@ On **npmjs.com**, signed in as the account that owns the `@wjarka` scope:
      one CI job; set the bypass on the token instead, which is scoped to that
      token alone. A classic *Automation* token bypasses 2FA by design and is
      the other valid answer, at the cost of no expiry and account-wide write.
-3. After the first publish, for every package: Settings → *Publishing access*
+   - Do **not** set Publishing access to *"Require two-factor authentication
+     and disallow tokens"*. That is npm's "maximum security" recommendation
+     once *every* publish is OIDC; here the token still has to publish
+     prereleases and remove dist-tags. Leave it at *"Require two-factor
+     authentication or an automation or granular access token"*.
+   - npm has no "prerelease-only" token permission. A leaked `NPM_TOKEN` can
+     still `npm publish --tag latest`. What the narrowing actually buys: the
+     token can no longer create new packages, and only the preview / nightly /
+     cleanup jobs receive it. Those jobs never pass `--tag latest`. The
+     trusted publisher is the intended `latest` path, not an exclusive one.
+4. After rotating the token, for every package: Settings → *Publishing access*
    → **"Require two-factor authentication or an automation or granular access
-   token"** (CI publishes with the token; humans still need 2FA).
+   token"** (preview CI publishes with the token; humans still need 2FA).
 
 On **GitHub** (this repository):
 
-4. Settings → Secrets and variables → Actions → new repository secret
-   **`NPM_TOKEN`** with the token from step 2. This repository has no `NPM_TOKEN`
-   today, so this is a create, not a rotation — every release and snapshot run so
-   far has reported `NPM_TOKEN is not configured — forcing --dry-run` and stayed
-   green. If a fork ever does inherit an upstream token, **replace** that value
-   rather than adding a second secret: the old token cannot write `@wjarka/*`, and
-   the release would fail with a misleading `E404`.
-5. Nothing else — the workflows declare their own `permissions:` blocks, so
-   repo-level Actions defaults can stay read-only.
+5. Settings → Secrets and variables → Actions → repository secret **`NPM_TOKEN`**
+   with the narrowed token from step 3. Rotate the existing value rather than
+   adding a second secret. `release.yml` does not read this secret.
+6. Nothing else — the workflows declare their own `permissions:` blocks, so
+   repo-level Actions defaults can stay read-only. The `production` environment
+   already gates the Release workflow; add reviewers there if a release should
+   require approval.
 
 Nothing is deprecated on the upstream side: this clone publishes under names npm
 has never seen, so `@open-mercato/cezar` and `cezar-cli` keep belonging to

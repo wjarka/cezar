@@ -106,6 +106,8 @@ function runScript(fixtureRoot: string, extraEnv: Record<string, string>, args: 
     GITHUB_OUTPUT: join(fixtureRoot, 'github-output.txt'),
     NODE_AUTH_TOKEN: '',
     GITHUB_ACTIONS: '',
+    ACTIONS_ID_TOKEN_REQUEST_URL: '',
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: '',
     // Neutralized for the same reason as the two above: the suite inherits `process.env`, and
     // under Actions that carries the workflow's OWN run identity. `GITHUB_RUN_ATTEMPT` is the
     // one that bites, because `computeSnapshot` appends `.${attempt}` whenever it is > 1 — so
@@ -165,6 +167,24 @@ test('dry-run publish stamps every manifest, pins each sibling exact, and emits 
       result.installLines.some((line) => line.includes('npx fake-alias@0.9.9-pr77.5')),
       'install lines should use the actual alias name and exact version',
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('OIDC without a token still forces a snapshot dry run', { timeout: 120_000 }, async () => {
+  const root = await makeFixture();
+  try {
+    await writeFile(join(root, 'github-output.txt'), '');
+    const { stdout } = await runScript(root, {
+      GITHUB_EVENT_NAME: 'push',
+      GITHUB_REF_NAME: 'develop',
+      GITHUB_REPOSITORY: 'open-mercato/cezar',
+      GITHUB_RUN_NUMBER: '8',
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.invalid/oidc',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'fake-oidc',
+    });
+    assert.match(stdout, /forcing --dry-run/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
