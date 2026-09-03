@@ -705,6 +705,35 @@ describe('meta line, tabs, pill and resume hint', () => {
     expect(badge.getAttribute('data-slot')).toBe('agent-badge')
   })
 
+  it('shows saved effort in the agent badge summary and labelled menu detail (#52)', async () => {
+    stubFetch()
+    renderHeader(run('done', { runner: 'codex', model: 'gpt-5.2-codex', effort: 'high' }))
+
+    const badge = screen.getByRole('button', {
+      name: 'Agent: codex, model gpt-5.2-codex, effort high',
+    })
+    expect(badge.querySelector('[data-slot="agent-badge-summary"]')?.textContent)
+      .toBe('codex · gpt-5.2-codex · high')
+
+    fireEvent.pointerDown(badge, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    const menu = await screen.findByRole('menu')
+    expect(menu.querySelector('[data-slot="agent-badge-effort"]')?.textContent).toBe('effort: high')
+  })
+
+  it('omits effort metadata when the run has no saved effort (#52)', async () => {
+    stubFetch()
+    renderHeader(run('done', { runner: 'codex', model: 'gpt-5.2-codex' }))
+
+    const badge = screen.getByRole('button', { name: 'Agent: codex, model gpt-5.2-codex' })
+    expect(badge.querySelector('[data-slot="agent-badge-summary"]')?.textContent)
+      .toBe('codex · gpt-5.2-codex')
+
+    fireEvent.pointerDown(badge, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    const menu = await screen.findByRole('menu')
+    expect(menu.querySelector('[data-slot="agent-badge-effort"]')).toBeNull()
+    expect(menu.textContent).not.toContain('effort:')
+  })
+
   // #801: automation provenance is history — a run launched while automations were on keeps it
   // forever — so the chip stays, but it only LINKS while the capability is on. Following it with
   // automations off would land on the disabled `/automations` state, which says nothing about
