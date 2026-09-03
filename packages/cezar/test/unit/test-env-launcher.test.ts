@@ -184,7 +184,10 @@ test('a tracked file inside the boot second is reused; a later edit still refuse
   assert.match(refused.stderr, /source changed since boot/);
   assert.match(refused.stderr, /package\.json/);
   launchedPids.delete(first.app.pid);
-  launchedPids.add(descriptor(fixture.root).app.pid);
+  const rebuilt = descriptor(fixture.root);
+  launchedPids.add(rebuilt.app.pid);
+  const beforeRebuilt = new Date(Date.parse(rebuilt.startedAt) - 30_000);
+  utimesSync(join(fixture.root, 'package.json'), beforeRebuilt, beforeRebuilt);
 
   const warm = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
   assert.equal(warm.status, 0, warm.stderr);
