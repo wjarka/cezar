@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { effortLevelSchema, type EffortLevel } from '@open-mercato/cezar-contract';
 import { trackChildExit } from './agent-runner.ts';
 import { buildChildEnv } from './agent-env.ts';
 import type { ModelOption } from './runner-model-catalog.ts';
@@ -47,7 +48,7 @@ export async function discoverOpencodeModels(
   options: OpencodeModelDiscoveryOptions,
 ): Promise<ModelOption[]> {
   const bin = resolveOpencodeExecutable(options.bin);
-  const args = ['models'] as const;
+  const args = ['models', '--verbose'] as const;
   const child = (options.spawn ?? spawnOpencode)(bin, args, options.cwd);
   const kill = teardown(child);
 
@@ -101,12 +102,12 @@ export async function discoverOpencodeModels(
 }
 
 /**
- * Turn `opencode models` output into picker options, preserving OpenCode's own order.
+ * Turn `opencode models --verbose` output into picker options, preserving OpenCode's own order.
+ * Each model id starts a segment whose remaining lines are its JSON metadata. Invalid metadata is
+ * isolated to that model: the id remains usable and the cockpit applies its per-model fallback.
  *
- * Empty output is a legitimate answer (no provider configured yet) and yields no models, so the
- * picker shows `auto` alone. Output that contains lines but NO recognizable id is treated as a
- * failure instead: the CLI said something we cannot read, and reporting "unavailable" is more
- * honest than an empty catalog that looks like "you have no models".
+ * Empty output is a legitimate answer (no provider configured yet) and yields no models. Output
+ * that contains lines but NO recognizable id is treated as a failure instead.
  */
 export function parseOpencodeModels(stdout: string): ModelOption[] {
   const lines = stdout
@@ -115,20 +116,59 @@ export function parseOpencodeModels(stdout: string): ModelOption[] {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
+  const segments: Array<{ id: string; metadata: string[] }> = [];
+  let current: { id: string; metadata: string[] } | undefined;
+  for (const line of lines) {
+    if (MODEL_LINE_RE.test(line)) {
+      current = { id: line, metadata: [] };
+      segments.push(current);
+    } else if (current) {
+      current.metadata.push(line);
+    }
+  }
+
   const models: ModelOption[] = [];
   const ids = new Set<string>();
-  for (const line of lines) {
-    if (!MODEL_LINE_RE.test(line) || ids.has(line)) continue;
+  for (const segment of segments) {
+    if (ids.has(segment.id)) continue;
     if (models.length >= MAX_MODELS) throw new Error('OpenCode model discovery exceeded the size limit');
-    ids.add(line);
-    const provider = line.slice(0, line.indexOf('/'));
-    models.push({ id: line, label: line, description: `via ${provider}` });
+    ids.add(segment.id);
+    const provider = segment.id.slice(0, segment.id.indexOf('/'));
+    const effortLevels = effortLevelsFromMetadata(segment.metadata);
+    models.push({
+      id: segment.id,
+      label: segment.id,
+      description: `via ${provider}`,
+      ...(effortLevels ? { effortLevels } : {}),
+    });
   }
 
   if (models.length === 0 && lines.length > 0) {
     throw new Error('OpenCode model discovery returned unrecognized output');
   }
   return models;
+}
+
+function effortLevelsFromMetadata(lines: readonly string[]): EffortLevel[] | undefined {
+  if (lines.length === 0) return undefined;
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(lines.join('\n'));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(metadata) || !isRecord(metadata.variants)) return undefined;
+
+  const levels: EffortLevel[] = [];
+  for (const name of Object.keys(metadata.variants)) {
+    const parsed = effortLevelSchema.safeParse(name);
+    if (parsed.success && !levels.includes(parsed.data)) levels.push(parsed.data);
+  }
+  return levels.length > 0 ? levels : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function spawnOpencode(
