@@ -138,6 +138,9 @@ export const runRecordSchema = z.object({
    *  (#image-display) — persisted like agent screenshots, served from `/images/`. */
   taskImages: z.array(z.string()).optional(),
   model: z.string().optional(),
+  /** Reasoning-effort pin (#45). Canonical `low`/`medium`/`high`/`xhigh`/`max`.
+   *  Absent = harness default. Additive: pre-#45 records omit it and still parse. */
+  effort: z.string().max(32).optional(),
   /** Canonical provider/model identity (#405) — the normalised `provider/model`
    *  (e.g. `anthropic/claude-opus-4-8`) the run actually used, resolved from the
    *  free-text `model` against the chosen runner. Additive and optional: pre-#405
@@ -614,6 +617,8 @@ export class RunStore extends EventEmitter {
     workflow: string;
     task: string;
     model?: string;
+    /** Reasoning-effort pin (#45). Absent = harness default. */
+    effort?: string;
     runner?: RunnerId;
     /** Composer's per-task agent account (spec 2026-07-29-agent-profiles). */
     agentProfile?: string;
@@ -636,6 +641,7 @@ export class RunStore extends EventEmitter {
       workflow: input.workflow,
       task: input.task,
       model: input.model,
+      effort: input.effort,
       runner: input.runner,
       agentProfile: input.agentProfile,
       generateFollowups: input.generateFollowups,

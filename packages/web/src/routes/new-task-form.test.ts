@@ -214,6 +214,45 @@ describe('buildCreateRunBody — the exact POST /api/v1/runs payloads legacy sen
     expect(JSON.parse(JSON.stringify(body))).toEqual({ task: 'do the thing', workflow: 'quick-task' })
   })
 
+  it('sends a pinned effort and omits auto (#45)', () => {
+    const pinned = buildCreateRunBody({
+      task: 'hard',
+      source: { source: 'workflow', ref: 'quick-task' },
+      model: '',
+      effort: 'xhigh',
+      runner: 'claude',
+      defaultRunner: 'claude',
+      variants: 1,
+      images: [],
+    })
+    expect(JSON.parse(JSON.stringify(pinned)).effort).toBe('xhigh')
+
+    const auto = buildCreateRunBody({
+      task: 'hard',
+      source: { source: 'workflow', ref: 'quick-task' },
+      model: '',
+      effort: '',
+      runner: 'claude',
+      defaultRunner: 'claude',
+      variants: 1,
+      images: [],
+    })
+    expect(JSON.parse(JSON.stringify(auto)).effort).toBeUndefined()
+
+    const locked = buildCreateRunBody({
+      task: 'hard',
+      source: { source: 'workflow', ref: 'quick-task' },
+      model: 'opus',
+      effort: 'max',
+      modelsLocked: true,
+      runner: 'claude',
+      defaultRunner: 'claude',
+      variants: 1,
+      images: [],
+    })
+    expect(locked.effort).toBeUndefined()
+  })
+
   it('NO source → the built-in quick-task, because the route demands workflow XOR steps', () => {
     const body = buildCreateRunBody({
       task: 'just do it',

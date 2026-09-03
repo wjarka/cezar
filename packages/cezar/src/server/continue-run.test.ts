@@ -25,6 +25,7 @@ describe('POST /api/v1/runs/:id/continue override', () => {
     images?: Array<{ type: string; source: { media_type: string; data: string } }>;
     runner?: string;
     model?: string;
+    effort?: string;
     agentProfile?: string;
   };
   let captured: { id: string; opts: ContinueOpts } | undefined;
@@ -99,6 +100,13 @@ describe('POST /api/v1/runs/:id/continue override', () => {
     expect(res.status).toBe(200);
     expect(captured?.opts.runner).toBeUndefined();
     expect(captured?.opts.model).toBeUndefined();
+    expect(captured?.opts.effort).toBeUndefined();
+  });
+
+  it('plumbs an effort override through to the manager (#45)', async () => {
+    const res = await post({ effort: 'high' });
+    expect(res.status).toBe(200);
+    expect(captured?.opts.effort).toBe('high');
   });
 
   it('still carries a follow-up text alongside the override', async () => {
@@ -121,6 +129,8 @@ describe('POST /api/v1/runs/:id/continue override', () => {
     expect((await post({ runner: 'codex' })).status).toBe(200);
     expect(captured?.opts.runner).toBe('codex');
     expect(captured?.opts.model).toBeUndefined();
+
+    expect((await post({ effort: 'max' })).status).toBe(409);
   });
 
   /** The follow-up composer is a full composer, so a screenshot pasted into it has to reach the

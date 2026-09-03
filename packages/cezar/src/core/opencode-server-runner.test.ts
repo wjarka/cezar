@@ -314,6 +314,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     opts: MockServerOptions & {
       onUiEvent?: (event: UiEvent) => void;
       autoEndAfterFirstTurn?: boolean;
+      effort?: string;
     },
     run: (h: Harness) => Promise<void>,
   ): Promise<void> {
@@ -322,7 +323,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     const events: AgentEvent[] = [];
     const uiEvents: UiEvent[] = [];
     const session = new OpencodeServerRunner({ bin: 'opencode', timeoutMs: 30_000 }).startSession(
-      { userPrompt: 'go', cwd: process.cwd() },
+      { userPrompt: 'go', cwd: process.cwd(), effort: opts.effort },
       (e) => events.push(e),
       {
         autoEndAfterFirstTurn: opts.autoEndAfterFirstTurn,
@@ -373,6 +374,19 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
 
       mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
       await waitFor(() => count(events, 'turn-end') === 1);
+    });
+  });
+
+  it('posts a canonical effort pin as variant and omits it when unset (#45)', async () => {
+    await withSession({ effort: 'high' }, async ({ mock }) => {
+      await waitFor(() => mock.promptBodies.length === 1);
+      expect(mock.promptBodies[0]).toMatchObject({ variant: 'high' });
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
+    });
+    await withSession({}, async ({ mock }) => {
+      await waitFor(() => mock.promptBodies.length === 1);
+      expect(mock.promptBodies[0]).not.toHaveProperty('variant');
+      mock.send({ type: 'session.idle', properties: { sessionID: 'ses_test' } });
     });
   });
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from './agent-runner.js';
 import { KILL_GRACE_MS } from './claude-cli-runner.js';
-import { CodexAppServerRunner } from './codex-app-server-runner.js';
+import { CodexAppServerRunner, codexTurnStartExtras } from './codex-app-server-runner.js';
 
 /** Only the escalation tests below swap the child out; every other test in this
  *  file keeps spawning the real mock app-server through the untouched `spawn`. */
@@ -174,5 +174,19 @@ describe('SIGTERM→SIGKILL escalation for an app-server that survives SIGTERM',
       session.interrupt();
       expect(fake.signals).toEqual([]);
     });
+  });
+});
+
+describe('codexTurnStartExtras effort (#45)', () => {
+  it('sends effort on turn/start when pinned and omits it when unset', () => {
+    expect(codexTurnStartExtras({ effort: 'max' }).effort).toBe('max');
+    expect(codexTurnStartExtras({ effort: 'xhigh' }).effort).toBe('xhigh');
+    expect(codexTurnStartExtras({}).effort).toBeUndefined();
+    expect(codexTurnStartExtras({ effort: 'auto' }).effort).toBeUndefined();
+  });
+
+  it('does not conflate effort with CEZ_CODEX_REASONING summary', () => {
+    const extras = codexTurnStartExtras({ effort: 'high' }, { CEZ_CODEX_REASONING: 'detailed' });
+    expect(extras).toEqual({ summary: 'detailed', effort: 'high' });
   });
 });

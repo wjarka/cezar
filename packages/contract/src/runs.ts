@@ -147,6 +147,9 @@ export const runRecordSchema = z.object({
   /** URLs of images attached to the initial task prompt (#image-display). */
   taskImages: z.array(z.string()).optional(),
   model: z.string().optional(),
+  /** Reasoning-effort pin (#45). Canonical `low`/`medium`/`high`/`xhigh`/`max`.
+   *  Absent = harness default. Additive: pre-#45 records omit it and still parse. */
+  effort: z.string().max(32).optional(),
   /** Normalized provider/model identity used for attribution and reproducible replay. */
   modelIdentity: z.string().optional(),
   runner: runnerSchema.optional(),
@@ -616,6 +619,8 @@ export const createRunInputBaseSchema = z
     steps: z.array(workflowStepDefSchema).min(1).max(8).optional(),
     task: z.string().min(1).max(100_000, 'must be at most 100000 characters'),
     model: z.string().optional(),
+    /** Reasoning-effort pin (#45). Omit for the harness default; empty/`auto` stay implicit. */
+    effort: z.string().max(32).optional(),
     runner: runnerSchema.optional(),
     /** Agent account for this task (spec 2026-07-29-agent-profiles). Omit to follow the
      *  project's own selection; an id that no longer exists is a 400, not a silent default. */

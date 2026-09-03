@@ -566,6 +566,8 @@ const startRunSchema = z
     // (~25k tokens) is well past any hand-written task.
     task: z.string().min(1).max(100_000, 'must be at most 100000 characters'),
     model: z.string().optional(),
+    // Reasoning-effort pin (#45). Omit for the harness default.
+    effort: z.string().max(32).optional(),
     // Agent backend for this task (falls back to config `defaultRunner`).
     runner: z.enum(RUNNER_IDS).optional(),
     // Agent account for this task (spec 2026-07-29-agent-profiles). Falls back to the project's
@@ -841,6 +843,8 @@ const continueSchema = z.object({
   images: z.array(imageInputSchema).max(4).optional(),
   runner: z.enum(RUNNER_IDS).optional(),
   model: z.string().max(200).optional(),
+  /** Reasoning-effort pin (#45). Omitted keeps the run's pin; empty string clears it. */
+  effort: z.string().max(32).optional(),
   /** Agent account for the reopened session (spec 2026-07-29-agent-profiles). Bound mirrors
    *  `POST /runs`' own `agentProfile`. Omitted = keep the account the run is already on. */
   agentProfile: z.string().max(64).optional(),
@@ -857,6 +861,7 @@ const startTodoSchema = z
   .object({
     runner: z.enum(RUNNER_IDS).optional(),
     model: z.string().max(200).optional(),
+    effort: z.string().max(32).optional(),
     prompt: z
       .string()
       .trim()
@@ -3540,7 +3545,10 @@ export function createApp(deps: ServerDeps) {
     .post('/runs', jsonZodValidator(startRunSchema), async (c) => {
       const { root: repoRoot, dataDir, manager } = c.get('project');
       const parsed = { data: c.req.valid('json') };
-      if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
+      if (
+        agentModelsLocked(repoRoot) &&
+        (parsed.data.model?.trim() || parsed.data.effort?.trim())
+      ) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
       let workflow: WorkflowDef | undefined;
@@ -3576,6 +3584,7 @@ export function createApp(deps: ServerDeps) {
       const input = {
         task: parsed.data.task,
         model: parsed.data.model,
+        effort: parsed.data.effort,
         runner: parsed.data.runner,
         agentProfile: parsed.data.agentProfile,
         images,
@@ -3842,7 +3851,10 @@ export function createApp(deps: ServerDeps) {
       // Bounded resume text (#429); an empty/absent body still just re-runs on the
       // run's current backend, and a runner/model override reopens on that engine (#401).
       const parsed = { data: c.req.valid('json') };
-      if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
+      if (
+        agentModelsLocked(repoRoot) &&
+        (parsed.data.model?.trim() || parsed.data.effort?.trim())
+      ) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
       const blocked = await providerActionError([providerForExistingRun(run, parsed.data.runner)]);
@@ -3864,6 +3876,7 @@ export function createApp(deps: ServerDeps) {
         })),
         runner: parsed.data.runner,
         model: parsed.data.model,
+        effort: parsed.data.effort,
         agentProfile: parsed.data.agentProfile,
       });
       if (!result.ok) return c.json({ error: result.error }, 409);
@@ -4526,7 +4539,10 @@ export function createApp(deps: ServerDeps) {
         const id = c.req.param('id');
         const todo = c.get('todo');
         const parsed = { data: c.req.valid('json') };
-        if (agentModelsLocked(repoRoot) && parsed.data?.model?.trim()) {
+        if (
+          agentModelsLocked(repoRoot) &&
+          (parsed.data?.model?.trim() || parsed.data?.effort?.trim())
+        ) {
           return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
         }
         if (todo.startedTaskId) return c.json({ error: 'already started' }, 409);
@@ -4566,6 +4582,7 @@ export function createApp(deps: ServerDeps) {
           task,
           runner: parsed.data?.runner,
           model: parsed.data?.model,
+          effort: parsed.data?.effort,
         });
         await markStarted(dataDir, id, run.id);
         return c.json({ run }, 201);

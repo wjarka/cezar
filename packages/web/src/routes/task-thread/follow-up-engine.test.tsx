@@ -184,6 +184,27 @@ const continueBody = () =>
   requests.find((r) => r.url.endsWith('/continue') && r.method === 'POST')?.body
 
 describe('follow-up ContinueAction runner/model selection (#401)', () => {
+  it('defaults the effort pill to the run pin and omits it when untouched (#45)', async () => {
+    serve()
+    renderAction(makeRun({ effort: 'high' }))
+    const pill = await screen.findByRole('button', { name: 'Effort' })
+    expect(pill.textContent).toContain('high')
+    fireEvent.click(await screen.findByRole('button', { name: /continue/i }))
+    await waitFor(() => expect(continueBody()).toBeDefined())
+    expect(continueBody()).toEqual({})
+  })
+
+  it('sends a touched effort override through to /continue (#45)', async () => {
+    serve()
+    renderAction(makeRun({ effort: 'medium' }))
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Effort' }))
+    const options = await screen.findAllByRole('menuitemradio')
+    fireEvent.click(options.find((option) => option.textContent?.includes('xhigh')) as HTMLElement)
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await waitFor(() => expect(continueBody()).toBeDefined())
+    expect(continueBody()).toEqual({ effort: 'xhigh' })
+  })
+
   it('an untouched Continue omits runner & model — the run keeps its backend', async () => {
     serve()
     renderAction(makeRun())

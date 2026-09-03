@@ -82,7 +82,7 @@ describe('model identity wiring (dry run)', () => {
     }
   }
 
-  async function runToEnd(input: { task: string; model?: string }): Promise<string> {
+  async function runToEnd(input: { task: string; model?: string; effort?: string }): Promise<string> {
     writeFileSync(argsFile, '', 'utf8'); // fresh capture per run
     const record = manager.startRun(workflow, input);
     await settle(record.id);
@@ -105,6 +105,33 @@ describe('model identity wiring (dry run)', () => {
     // … while the record carries the canonical identity (#405's whole point).
     expect(store.getRun(id)?.modelIdentity).toBe('anthropic/opus');
     expect(store.getRun(id)?.model).toBe('opus'); // the free-text surface is untouched
+  }, 30_000);
+
+  function capturedFlag(flag: string, index = 0): string | undefined {
+    const lines = readFileSync(argsFile, 'utf8').trim().split('\n');
+    expect(lines.length).toBeGreaterThan(index);
+    const argv = JSON.parse(lines[index] as string) as string[];
+    const idx = argv.indexOf(flag);
+    return idx < 0 ? undefined : argv[idx + 1];
+  }
+
+  it('pins --effort on create and reuses it on Continue when the body omits it (#45)', async () => {
+    const id = await runToEnd({ task: 'do the thing', effort: 'high' });
+    expect(store.getRun(id)?.effort).toBe('high');
+    expect(capturedFlag('--effort')).toBe('high');
+
+    expect(manager.continueRun(id, { text: 'keep going' })).toEqual({ ok: true });
+    const deadline = Date.now() + 20_000;
+    while (readFileSync(argsFile, 'utf8').trim().split('\n').length < 2) {
+      if (Date.now() > deadline) throw new Error('continuation did not start in time');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(capturedFlag('--effort', 1)).toBe('high');
+  }, 40_000);
+
+  it('omits --effort when unset so the harness keeps its default (#45)', async () => {
+    await runToEnd({ task: 'do the thing' });
+    expect(capturedFlag('--effort')).toBeUndefined();
   }, 30_000);
 
   it('an auto (empty) model persists no identity and pins nothing on the wire', async () => {

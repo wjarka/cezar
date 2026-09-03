@@ -242,6 +242,31 @@ describe('RunStore — titleSummary + diffStat (#389)', () => {
     expect(store.getRun('bad-activity')?.activity).not.toBe('bogus');
   });
 
+  it('round-trips an effort pin while omission stays compatible (#45)', () => {
+    const store = RunStore.open(dataDir);
+    const pinned = store.createRun({
+      title: 'hard task',
+      workflow: 'quick-task',
+      task: 'hard task',
+      effort: 'high',
+      steps: [],
+    });
+    const omitted = store.createRun({
+      title: 'plain task',
+      workflow: 'quick-task',
+      task: 'plain task',
+      steps: [],
+    });
+    store.flush();
+
+    const reopened = RunStore.open(dataDir);
+    expect(reopened.getRun(pinned.id)?.effort).toBe('high');
+    expect(reopened.getRun(omitted.id)?.effort).toBeUndefined();
+
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify([LEGACY_RUN]), 'utf8');
+    expect(RunStore.open(dataDir).getRun(LEGACY_RUN.id)?.effort).toBeUndefined();
+  });
+
   it('persists an explicit follow-up opt-out while omission stays compatible', () => {
     const store = RunStore.open(dataDir);
     const disabled = store.createRun({

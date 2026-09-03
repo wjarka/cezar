@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { parseEffort } from '@open-mercato/cezar-contract';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve as resolvePath } from 'node:path';
 import type {
@@ -391,6 +392,8 @@ export function buildClaudeArgs(
   if (spec.model) {
     args.push('--model', spec.model);
   }
+  const effort = parseEffort(spec.effort);
+  if (effort) args.push('--effort', effort);
   for (const dir of spec.additionalDirectories ?? []) {
     args.push('--add-dir', dir);
   }

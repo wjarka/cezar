@@ -1226,6 +1226,8 @@ export interface ContinueOptions {
   images?: ImageInput[]
   runner?: Runner
   model?: string
+  /** Reasoning-effort pin (#45). Omitted keeps the run's pin; empty string clears it. */
+  effort?: string
   /** Which login of that agent reopens it (spec 2026-07-29-agent-profiles). Switching account
    *  starts a fresh session server-side — a session id lives inside ONE account's config dir. */
   agentProfile?: string
@@ -1240,6 +1242,7 @@ export async function continueRun(id: string, opts: ContinueOptions = {}): Promi
     ...(opts.images !== undefined ? { images: opts.images } : {}),
     ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     ...(opts.agentProfile !== undefined ? { agentProfile: opts.agentProfile } : {}),
   }
   return unwrap(
@@ -1265,6 +1268,7 @@ export async function continueProjectRun(
         ...(opts.images !== undefined ? { images: opts.images } : {}),
         ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
         ...(opts.agentProfile !== undefined ? { agentProfile: opts.agentProfile } : {}),
       },
     }),
@@ -1322,6 +1326,7 @@ export async function removeTodo(id: string): Promise<RemoveTodoResponse> {
 export interface StartTodoOptions {
   runner?: Runner
   model?: string
+  effort?: string
   prompt?: string
 }
 
@@ -1337,6 +1342,7 @@ export async function startTodo(
   const body = {
     ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
   }
   // No override → no body at all, exactly the bodyless POST this endpoint has always sent

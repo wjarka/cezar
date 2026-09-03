@@ -32,6 +32,7 @@ export const automationTaskSchema = z
     steps: z.array(workflowStepSchema).min(1).max(100).optional(),
     runner: z.enum(RUNNER_IDS).optional(),
     model: z.string().trim().min(1).max(200).optional(),
+    effort: z.string().trim().min(1).max(32).optional(),
     variants: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
     worktree: z.boolean().optional(),
     generateFollowups: z.boolean().optional(),

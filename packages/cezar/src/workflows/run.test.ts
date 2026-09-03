@@ -491,6 +491,43 @@ describe('RunManager.continueRun override', () => {
     expect(after?.model).toBe('sonnet');
   });
 
+  it('persists an effort override and keeps it when Continue omits it (#45)', () => {
+    const id = resumableRun();
+    store.updateRun(id, { effort: 'medium' });
+    expect(manager.continueRun(id, { text: 'keep going' })).toEqual({ ok: true });
+    expect(store.getRun(id)?.effort).toBe('medium');
+
+    expect(manager.continueRun(id, { effort: 'xhigh' })).toEqual({ ok: true });
+    expect(store.getRun(id)?.effort).toBe('xhigh');
+  });
+
+  it('an empty effort clears the pin so the harness keeps its default (#45)', () => {
+    const id = resumableRun();
+    store.updateRun(id, { effort: 'high' });
+    expect(manager.continueRun(id, { effort: '' })).toEqual({ ok: true });
+    expect(store.getRun(id)?.effort).toBeUndefined();
+  });
+
+  it('rejects an effort override while modelsLocked (#45)', () => {
+    const id = resumableRun();
+    writeFileSync(
+      join(repoRoot, '.ai', 'cezar', 'config.json'),
+      JSON.stringify({ modelsLocked: true }),
+      'utf8',
+    );
+    const result = manager.continueRun(id, { effort: 'max' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/locked/);
+    expect(store.getRun(id)?.effort).toBeUndefined();
+  });
+
+  it('a runner-only switch keeps the effort pin — it is shared vocabulary, not per-backend (#45)', () => {
+    const id = resumableRun();
+    store.updateRun(id, { effort: 'max' });
+    expect(manager.continueRun(id, { runner: 'codex' })).toEqual({ ok: true });
+    expect(store.getRun(id)?.effort).toBe('max');
+  });
+
   it("an empty model clears the pin so the runner picks the model (auto)", () => {
     const id = resumableRun();
     manager.continueRun(id, { model: '' });

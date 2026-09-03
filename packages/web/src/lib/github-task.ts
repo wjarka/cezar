@@ -145,7 +145,7 @@ export function githubRunBody(
   workflow: string | null,
   skills: readonly string[],
   customPrompt?: string,
-  backend: Pick<CreateRunInput, 'model' | 'runner' | 'agentProfile'> = {},
+  backend: Pick<CreateRunInput, 'model' | 'runner' | 'effort' | 'agentProfile'> = {},
 ): CreateRunInput {
   // A custom prompt EXTENDS the item context rather than replacing it (#524) — see
   // `composeGithubTask`. The workflow/skill routing and the #401 `backend` spread are unchanged;
