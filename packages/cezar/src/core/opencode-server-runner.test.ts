@@ -290,6 +290,35 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     return child;
   }
 
+  /** Fake spawn failure: the process never started, so the runner only ever
+   *  sees the ENOENT `error` event plus the immediate death (the shape node
+   *  produces for a binary that is not on PATH). */
+  function enoentChild(): ChildProcessWithoutNullStreams {
+    const emitter = new EventEmitter();
+    const child = Object.assign(emitter, {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      killed: false,
+      pid: undefined,
+      kill: () => false,
+    }) as unknown as ChildProcessWithoutNullStreams;
+    const err = Object.assign(new Error('spawn opencode ENOENT'), {
+      code: 'ENOENT',
+      errno: -2,
+      path: 'opencode',
+    });
+    process.nextTick(() => {
+      emitter.emit('error', err);
+      Object.assign(child, { exitCode: 1 });
+      emitter.emit('exit', 1, null);
+      emitter.emit('close', 1, null);
+    });
+    return child;
+  }
+
   // Generous: under a fully loaded suite run these tests share the machine
   // with hundreds of files, and a tight bound here is a flake, not a check.
   async function waitFor(cond: () => boolean, ms = 10_000): Promise<void> {
@@ -315,6 +344,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       onUiEvent?: (event: UiEvent) => void;
       autoEndAfterFirstTurn?: boolean;
       effort?: string;
+      model?: string;
     },
     run: (h: Harness) => Promise<void>,
   ): Promise<void> {
@@ -323,7 +353,7 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
     const events: AgentEvent[] = [];
     const uiEvents: UiEvent[] = [];
     const session = new OpencodeServerRunner({ bin: 'opencode', timeoutMs: 30_000 }).startSession(
-      { userPrompt: 'go', cwd: process.cwd(), effort: opts.effort },
+      { userPrompt: 'go', cwd: process.cwd(), effort: opts.effort, model: opts.model },
       (e) => events.push(e),
       {
         autoEndAfterFirstTurn: opts.autoEndAfterFirstTurn,
@@ -496,8 +526,100 @@ describe('turn lifecycle over prompt_async + session.idle', { timeout: 15_000 },
       await waitFor(() => count(events, 'turn-end') === 1);
 
       const errors = events.filter((e) => e.type === 'error').map((e) => e.message);
-      expect(errors).toEqual(['opencode: API key expired']);
+      expect(errors).toEqual(['opencode: provider request failed: API key expired']);
     });
+  });
+
+  // #53 — an upstream provider outage arrived as a bare `Not Found`, and
+  // `opencode: Not Found` read exactly like a missing executable. The runner
+  // is the only place that knows the selected provider/model, so it names
+  // them and keeps any structured upstream status or code.
+  it('identifies the provider and model in a runtime provider error', async () => {
+    await withSession({ model: 'openai/gpt-5.6-sol' }, async ({ events, mock }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+
+      mock.send({
+        type: 'session.error',
+        properties: {
+          sessionID: 'ses_test',
+          error: { name: 'AI_APICallError', message: 'Not Found' },
+        },
+      });
+      await waitFor(() => count(events, 'error') === 1);
+
+      const message = events.find((e) => e.type === 'error')!.message;
+      expect(message).toBe('opencode: provider openai/gpt-5.6-sol request failed: Not Found');
+      // A runtime failure must never read like the spawn-failure guidance.
+      expect(message).not.toMatch(/not found on PATH/i);
+    });
+  });
+
+  it('keeps the structured upstream status or code in a forwarded provider error', async () => {
+    await withSession({ model: 'openai/gpt-5.6-sol' }, async ({ events, mock }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+
+      mock.send({
+        type: 'session.error',
+        properties: {
+          sessionID: 'ses_test',
+          error: { name: 'AI_APICallError', message: 'Not Found', statusCode: 404 },
+        },
+      });
+      mock.send({
+        type: 'session.error',
+        properties: {
+          sessionID: 'ses_test',
+          error: {
+            name: 'ProviderError',
+            message: 'quota exhausted',
+            data: { code: 'insufficient_quota' },
+          },
+        },
+      });
+      await waitFor(() => count(events, 'error') === 2);
+
+      const messages = events.filter((e) => e.type === 'error').map((e) => e.message);
+      expect(messages[0]).toBe(
+        'opencode: provider openai/gpt-5.6-sol request failed: Not Found (HTTP 404)',
+      );
+      expect(messages[1]).toBe(
+        'opencode: provider openai/gpt-5.6-sol request failed: quota exhausted (code insufficient_quota)',
+      );
+    });
+  });
+
+  it('still separates a provider Not Found from a missing binary when no model is set', async () => {
+    await withSession({}, async ({ events, mock }) => {
+      await waitFor(() => mock.promptPosts.length === 1);
+
+      mock.send({
+        type: 'session.error',
+        properties: { sessionID: 'ses_test', error: { message: 'Not Found' } },
+      });
+      await waitFor(() => count(events, 'error') === 1);
+
+      expect(events.find((e) => e.type === 'error')!.message).toBe(
+        'opencode: provider request failed: Not Found',
+      );
+    });
+  });
+
+  // The other half of #53: a genuinely missing executable keeps its explicit
+  // PATH + installation guidance, distinct from any provider runtime error.
+  it('keeps PATH and installation guidance for a missing binary', async () => {
+    const child = enoentChild();
+    spawnHook.override = () => child;
+    try {
+      const session = new OpencodeServerRunner({ bin: 'opencode', timeoutMs: 30_000 }).startSession({
+        userPrompt: 'go',
+        cwd: process.cwd(),
+        model: 'openai/gpt-5.6-sol',
+      });
+      await expect(session.result).rejects.toThrow(/`opencode` not found on PATH/);
+      await expect(session.result).rejects.toThrow(/https:\/\/opencode\.ai/);
+    } finally {
+      spawnHook.override = null;
+    }
   });
 
   it('queues a follow-up prompt until the current turn ends', async () => {
