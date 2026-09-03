@@ -2,7 +2,12 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { KILL_GRACE_MS, discoverPiModels, parsePiModels } from './pi-model-catalog.ts';
+import {
+  KILL_GRACE_MS,
+  discoverPiModels,
+  parsePiEffortLevels,
+  parsePiModels,
+} from './pi-model-catalog.ts';
 
 /**
  * A stand-in for the `pi --list-models` child: write its stdout, then close with a code.
@@ -17,6 +22,7 @@ function fakeChild(): {
   exit(code: number): void;
   signals: NodeJS.Signals[];
   killed(): boolean;
+  input(): string;
 } {
   const process = new EventEmitter();
   const stdin = new PassThrough();
@@ -52,6 +58,7 @@ function fakeChild(): {
     exit,
     signals,
     killed: () => signals.length > 0,
+    input: () => stdin.read()?.toString() ?? '',
   };
 }
 
@@ -60,9 +67,20 @@ function discover(
   script: (fake: ReturnType<typeof fakeChild>) => void,
   options: { timeoutMs?: number } = {},
 ): Promise<Array<{ id: string; label: string; description: string }>> {
-  const fake = fakeChild();
-  const promise = discoverPiModels({ cwd: '/repo', spawn: () => fake.child, ...options });
-  queueMicrotask(() => script(fake));
+  const base = fakeChild();
+  let calls = 0;
+  const promise = discoverPiModels({
+    cwd: '/repo',
+    spawn: () => {
+      calls += 1;
+      if (calls === 1) return base.child;
+      const rpc = fakeChild();
+      queueMicrotask(() => rpc.close(1));
+      return rpc.child;
+    },
+    ...options,
+  });
+  queueMicrotask(() => script(base));
   return promise;
 }
 
@@ -116,8 +134,96 @@ describe('parsePiModels', () => {
   });
 });
 
+describe('parsePiEffortLevels', () => {
+  it('keeps recognized levels only after the matching model switch succeeds', () => {
+    const output = [
+      { id: 'set:0', type: 'response', command: 'set_model', success: true, data: {} },
+      {
+        id: 'levels:0',
+        type: 'response',
+        command: 'get_available_thinking_levels',
+        success: true,
+        data: { levels: ['off', 'minimal', 'low', 'high', 'max', 'future', 'high'] },
+      },
+      { id: 'set:1', type: 'response', command: 'set_model', success: false, error: 'missing' },
+      {
+        id: 'levels:1',
+        type: 'response',
+        command: 'get_available_thinking_levels',
+        success: true,
+        data: { levels: ['low', 'medium'] },
+      },
+      { id: 'set:2', type: 'response', command: 'set_model', success: true, data: {} },
+      { id: 'levels:2', type: 'response', command: 'get_available_thinking_levels', success: true, data: { levels: [] } },
+      'not-json',
+    ].map((record) => typeof record === 'string' ? record : JSON.stringify(record)).join('\n');
+
+    expect([...parsePiEffortLevels(output, 3)]).toEqual([[0, ['low', 'high', 'max']]]);
+  });
+});
+
 describe('discoverPiModels', () => {
-  it('lists what the host CLI printed', async () => {
+  it('enriches each listed model through one RPC child without changing model order', async () => {
+    const base = fakeChild();
+    const rpc = fakeChild();
+    const spawned: Array<{ args: readonly string[]; child: ReturnType<typeof fakeChild> }> = [];
+    const promise = discoverPiModels({
+      cwd: '/repo',
+      spawn: (_bin, args) => {
+        const child = spawned.length === 0 ? base : rpc;
+        spawned.push({ args, child });
+        if (spawned.length === 2) {
+          queueMicrotask(() => {
+            rpc.say([
+              JSON.stringify({ id: 'set:0', type: 'response', command: 'set_model', success: true, data: {} }),
+              JSON.stringify({ id: 'levels:0', type: 'response', command: 'get_available_thinking_levels', success: true, data: { levels: ['low', 'medium', 'high', 'xhigh'] } }),
+              JSON.stringify({ id: 'set:1', type: 'response', command: 'set_model', success: false, error: 'missing' }),
+              JSON.stringify({ id: 'levels:1', type: 'response', command: 'get_available_thinking_levels', success: true, data: { levels: ['max'] } }),
+              JSON.stringify({ id: 'set:2', type: 'response', command: 'set_model', success: true, data: {} }),
+              JSON.stringify({ id: 'levels:2', type: 'response', command: 'get_available_thinking_levels', success: true, data: { levels: ['low', 'high', 'max'] } }),
+            ].join('\n'));
+            rpc.close(0);
+          });
+        }
+        return child.child;
+      },
+    });
+    queueMicrotask(() => {
+      base.say(`${TABLE}\n`);
+      base.close(0);
+    });
+
+    await expect(promise).resolves.toEqual([
+      {
+        id: 'llama-home/qwen3.8-27b-q4_k_m',
+        label: 'qwen3.8-27b-q4_k_m',
+        description: 'via llama-home',
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+      },
+      { id: 'openai-codex/gpt-5.4', label: 'gpt-5.4', description: 'via openai-codex' },
+      {
+        id: 'xai/grok-4.6',
+        label: 'grok-4.6',
+        description: 'via xai',
+        effortLevels: ['low', 'high', 'max'],
+      },
+    ]);
+    expect(spawned.map(({ args }) => args)).toEqual([
+      ['--list-models'],
+      ['--mode', 'rpc', '--no-session', '--no-tools', '--no-skills', '--no-prompt-templates'],
+    ]);
+    const commands = rpc.input().trim().split('\n').map((line: string) => JSON.parse(line));
+    expect(commands).toEqual([
+      { id: 'set:0', type: 'set_model', provider: 'llama-home', modelId: 'qwen3.8-27b-q4_k_m' },
+      { id: 'levels:0', type: 'get_available_thinking_levels' },
+      { id: 'set:1', type: 'set_model', provider: 'openai-codex', modelId: 'gpt-5.4' },
+      { id: 'levels:1', type: 'get_available_thinking_levels' },
+      { id: 'set:2', type: 'set_model', provider: 'xai', modelId: 'grok-4.6' },
+      { id: 'levels:2', type: 'get_available_thinking_levels' },
+    ]);
+  });
+
+  it('lists what the host CLI printed when RPC enrichment fails', async () => {
     await expect(
       discover((fake) => {
         fake.say(`${TABLE}\n`);
@@ -130,23 +236,32 @@ describe('discoverPiModels', () => {
     ]);
   });
 
-  it('passes the runner binary override through as `pi --list-models`', async () => {
-    const fake = fakeChild();
-    let spawned: { bin: string; args: readonly string[]; cwd: string } | undefined;
+  it('uses the runner binary override for the table and RPC probes', async () => {
+    const base = fakeChild();
+    const rpc = fakeChild();
+    const spawned: Array<{ bin: string; args: readonly string[]; cwd: string }> = [];
     const promise = discoverPiModels({
       cwd: '/repo',
       bin: '/opt/pi',
       spawn: (bin, args, cwd) => {
-        spawned = { bin, args, cwd };
-        return fake.child;
+        spawned.push({ bin, args, cwd });
+        if (spawned.length === 2) queueMicrotask(() => rpc.close(1));
+        return spawned.length === 1 ? base.child : rpc.child;
       },
     });
     queueMicrotask(() => {
-      fake.say(`${TABLE}\n`);
-      fake.close(0);
+      base.say(`${TABLE}\n`);
+      base.close(0);
     });
     await promise;
-    expect(spawned).toEqual({ bin: '/opt/pi', args: ['--list-models'], cwd: '/repo' });
+    expect(spawned).toEqual([
+      { bin: '/opt/pi', args: ['--list-models'], cwd: '/repo' },
+      {
+        bin: '/opt/pi',
+        args: ['--mode', 'rpc', '--no-session', '--no-tools', '--no-skills', '--no-prompt-templates'],
+        cwd: '/repo',
+      },
+    ]);
   });
 
   it('does not spawn the host CLI under CEZ_DRY_RUN=1', async () => {

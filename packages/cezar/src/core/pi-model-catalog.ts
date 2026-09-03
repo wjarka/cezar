@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { effortLevelSchema, type EffortLevel } from '@open-mercato/cezar-contract';
 import { trackChildExit } from './agent-runner.ts';
 import { buildChildEnv } from './agent-env.ts';
 import type { ModelOption } from './runner-model-catalog.ts';
@@ -16,6 +17,14 @@ export const KILL_GRACE_MS = 2_000;
 const MAX_MODELS = 500;
 /** Defensive cap on what we buffer from a misbehaving child (characters of stdout). */
 const MAX_OUTPUT_CHARS = 512 * 1_024;
+const RPC_ARGS = [
+  '--mode',
+  'rpc',
+  '--no-session',
+  '--no-tools',
+  '--no-skills',
+  '--no-prompt-templates',
+] as const;
 
 /** SGR/CSI sequences — `pi --list-models` colorizes a TTY. */
 const ANSI_RE = /\u001B\[[0-9;]*[A-Za-z]/g;
@@ -35,56 +44,93 @@ export function resolvePiExecutable(bin?: string): string {
  * a model cap.
  */
 export async function discoverPiModels(options: PiModelDiscoveryOptions): Promise<ModelOption[]> {
-  // `PiRunner` swaps in the bundled mock under CEZ_DRY_RUN=1; that mock speaks RPC, not
-  // `--list-models`. Without an explicit binary, skip the spawn so a dry-run cockpit never
-  // shells out to a real `pi` (AGENTS.md: dry-run keeps working with no real CLI).
+  // `PiRunner` swaps in the bundled mock under CEZ_DRY_RUN=1. Without an explicit binary, skip
+  // both host probes so an offline dry-run cockpit never shells out to a real `pi`.
   if (options.bin === undefined && process.env.CEZ_PI_BIN === undefined && process.env.CEZ_DRY_RUN === '1') {
     return [];
   }
-  const bin = resolvePiExecutable(options.bin);
-  const args = ['--list-models'] as const;
-  const child = (options.spawn ?? spawnPi)(bin, args, options.cwd);
-  const kill = teardown(child);
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  let timeout: NodeJS.Timeout | undefined;
+  const bin = resolvePiExecutable(options.bin);
+  const spawn = options.spawn ?? spawnPi;
+  const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS);
+  const listChild = spawn(bin, ['--list-models'], options.cwd);
+  listChild.stdin.end();
+  const listOutput = await collectPiOutput(
+    listChild,
+    Math.max(1, deadline - Date.now()),
+    'Pi model discovery',
+  );
+  const models = parsePiModels(listOutput);
+  if (models.length === 0 || Date.now() >= deadline) return models;
 
   try {
-    return await new Promise<ModelOption[]>((resolve, reject) => {
-      let stdout = '';
-      let overflowed = false;
+    const rpcChild = spawn(bin, RPC_ARGS, options.cwd);
+    models.forEach((model, index) => {
+      const slash = model.id.indexOf('/');
+      rpcChild.stdin.write(`${JSON.stringify({
+        id: `set:${index}`,
+        type: 'set_model',
+        provider: model.id.slice(0, slash),
+        modelId: model.id.slice(slash + 1),
+      })}\n`);
+      rpcChild.stdin.write(`${JSON.stringify({
+        id: `levels:${index}`,
+        type: 'get_available_thinking_levels',
+      })}\n`);
+    });
+    rpcChild.stdin.end();
+    const output = await collectPiOutput(
+      rpcChild,
+      Math.max(1, deadline - Date.now()),
+      'Pi effort discovery',
+    );
+    const levels = parsePiEffortLevels(output, models.length);
+    return models.map((model, index) => {
+      const effortLevels = levels.get(index);
+      return effortLevels ? { ...model, effortLevels } : model;
+    });
+  } catch {
+    // Effort metadata is enrichment. A missing/older RPC path must not discard a valid model list.
+    return models;
+  }
+}
 
+async function collectPiOutput(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+  label: string,
+): Promise<string> {
+  const kill = teardown(child);
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      let stdout = '';
+      let settled = false;
       const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
         reject(new Error(message));
         kill();
       };
 
-      timeout = setTimeout(() => fail('Pi model discovery timed out'), timeoutMs);
+      timeout = setTimeout(() => fail(`${label} timed out`), timeoutMs);
       timeout.unref?.();
-
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
-        if (overflowed) return;
+        if (settled) return;
         stdout += chunk;
-        if (stdout.length > MAX_OUTPUT_CHARS) {
-          overflowed = true;
-          fail('Pi model discovery exceeded the output limit');
-        }
+        if (stdout.length > MAX_OUTPUT_CHARS) fail(`${label} exceeded the output limit`);
       });
       child.stderr.resume();
-
-      child.once('error', () => fail('Pi model discovery child failed'));
+      child.once('error', () => fail(`${label} child failed`));
       child.once('close', (code) => {
-        if (overflowed) return;
+        if (settled) return;
         if (code !== 0) {
-          fail(`Pi model discovery child exited (${code ?? 'unknown'})`);
+          fail(`${label} child exited (${code ?? 'unknown'})`);
           return;
         }
-        try {
-          resolve(parsePiModels(stdout));
-        } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
+        settled = true;
+        resolve(stdout);
       });
     });
   } finally {
@@ -130,6 +176,54 @@ export function parsePiModels(stdout: string): ModelOption[] {
     models.push({ id, label: model, description: `via ${provider}` });
   }
   return models;
+}
+
+/** Parse model-indexed Pi RPC responses without letting a failed model switch reuse prior state. */
+export function parsePiEffortLevels(
+  stdout: string,
+  modelCount: number,
+): Map<number, EffortLevel[]> {
+  const successfulSets = new Set<number>();
+  const candidates = new Map<number, EffortLevel[]>();
+
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(record) || record.type !== 'response' || record.success !== true) continue;
+    const id = typeof record.id === 'string' ? record.id : '';
+    const match = /^(set|levels):(\d+)$/.exec(id);
+    if (!match) continue;
+    const index = Number(match[2]);
+    if (!Number.isInteger(index) || index < 0 || index >= modelCount) continue;
+
+    if (match[1] === 'set' && record.command === 'set_model') {
+      successfulSets.add(index);
+      continue;
+    }
+    if (match[1] !== 'levels' || record.command !== 'get_available_thinking_levels') continue;
+    if (!isRecord(record.data) || !Array.isArray(record.data.levels)) continue;
+    const levels: EffortLevel[] = [];
+    for (const value of record.data.levels) {
+      const parsed = effortLevelSchema.safeParse(value);
+      if (parsed.success && !levels.includes(parsed.data)) levels.push(parsed.data);
+    }
+    if (levels.length > 0) candidates.set(index, levels);
+  }
+
+  const result = new Map<number, EffortLevel[]>();
+  for (const [index, levels] of candidates) {
+    if (successfulSets.has(index)) result.set(index, levels);
+  }
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function spawnPi(
