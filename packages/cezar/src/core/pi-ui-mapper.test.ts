@@ -69,6 +69,7 @@ describe('pi RPC → v2 golden fixture', () => {
 
   it.each([
     { type: 'message_update', assistantMessageEvent: { type: 'future_update', contentIndex: 0 } },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0 } },
     { type: 'message_end', message: { role: 'user' } },
     { type: 'tool_execution_start', toolCallId: '', toolName: 'edit', args: {} },
   ])('does not synthesize a turn for invalid post-settlement activity: $type', (value) => {
@@ -80,6 +81,41 @@ describe('pi RPC → v2 golden fixture', () => {
     expect(mapped.events).toEqual([]);
     expect(mapped.state.turnId).toBeNull();
     expect(mapped.state.turnSeq).toBe(1);
+  });
+
+  it.each([
+    {
+      value: {
+        type: 'tool_execution_update',
+        toolCallId: 'late-tool',
+        partialResult: { content: [{ type: 'text', text: 'still working' }] },
+      },
+      eventType: 'item.updated',
+    },
+    {
+      value: {
+        type: 'tool_execution_end',
+        toolCallId: 'late-tool',
+        result: { content: [{ type: 'text', text: 'finished' }] },
+        isError: false,
+      },
+      eventType: 'item.completed',
+    },
+  ])('reopens a settled turn for a valid late tool frame: $eventType', ({ value, eventType }) => {
+    let state = piTurnStarted(createPiUiState()).state;
+    state = mapPiRpcMessage(
+      { type: 'tool_execution_start', toolCallId: 'late-tool', toolName: 'edit', args: { path: 'a.ts' } },
+      state,
+    ).state;
+    state = mapPiRpcMessage({ type: 'agent_settled' }, state).state;
+
+    const mapped = mapPiRpcMessage(value, state);
+
+    expect(mapped.events).toMatchObject([
+      { type: 'turn.started', turnId: 'turn_2' },
+      { type: eventType },
+    ]);
+    expect(mapped.state.turnId).toBe('turn_2');
   });
 });
 

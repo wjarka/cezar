@@ -422,6 +422,66 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     ]);
   });
 
+  it('steers a follow-up during a late update from a tool started before settlement', async () => {
+    const mockPath = join(cwd, 'mock-pi-late-tool-update.mjs');
+    writeFileSync(
+      mockPath,
+      `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+let prompts = 0;
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'late-tool-update' } });
+  } else if (command.type === 'prompt' && ++prompts === 1) {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'tool_execution_start', toolCallId: 'late-tool', toolName: 'edit', args: { path: 'a.ts' } });
+    send({ type: 'agent_settled' });
+    setTimeout(() => send({
+      type: 'tool_execution_update',
+      toolCallId: 'late-tool',
+      partialResult: { content: [{ type: 'text', text: 'still working' }] },
+    }), 20);
+  } else if (command.type === 'prompt') {
+    writeFileSync('late-tool-follow-up.json', JSON.stringify(command));
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+      { mode: 0o755 },
+    );
+
+    const uiEvents: UiEvent[] = [];
+    let session: AgentSession | undefined;
+    let followUpSent = false;
+    session = new PiRunner({ bin: mockPath }).startSession(
+      { userPrompt: 'start', cwd, timeoutMs: 10_000 },
+      undefined,
+      {
+        autoEndAfterFirstTurn: true,
+        onUiEvent: (event) => {
+          uiEvents.push(event);
+          if (event.type !== 'item.updated' || event.item.id !== 'late-tool' || followUpSent) return;
+          followUpSent = session?.sendMessage([{ type: 'text', text: 'user follow-up' }]) ?? false;
+        },
+      },
+    );
+    await session.result;
+
+    const followUp = JSON.parse(readFileSync(join(cwd, 'late-tool-follow-up.json'), 'utf8')) as Record<string, unknown>;
+    expect(followUpSent).toBe(true);
+    expect(followUp).toMatchObject({ streamingBehavior: 'steer' });
+    expect(uiEvents.filter((event) => event.type === 'turn.started').map((event) => event.turnId)).toEqual([
+      'turn_1',
+      'turn_2',
+    ]);
+  });
+
   it.each([
     { settles: false, expectsNote: true },
     { settles: true, expectsNote: false },

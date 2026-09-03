@@ -79,6 +79,7 @@ function mapActivity(
   if (state.turnId) return map(value, state);
   const started = piTurnStarted(state);
   const mapped = map(value, started.state);
+  if (mapped.events.length === 0) return { events: [], state };
   return { events: [...started.events, ...mapped.events], state: mapped.state };
 }
 
@@ -133,9 +134,9 @@ export function mapPiRpcMessage(value: unknown, state: PiUiMapperState): PiUiMap
         ? mapActivity(value, state, mapToolStart)
         : mapToolStart(value, state);
     case 'tool_execution_update':
-      return mapToolUpdate(value, state);
+      return mapActivity(value, state, mapToolUpdate);
     case 'tool_execution_end':
-      return mapToolEnd(value, state);
+      return mapActivity(value, state, mapToolEnd);
     case 'agent_settled':
       return completeTurn(state.stopReason, state);
     case 'extension_error': {
