@@ -1,0 +1,19 @@
+[
+  { "type": "turn.started", "turnId": "turn_1" },
+  {
+    "type": "session.started",
+    "sessionId": "3f60d363-22c6-4400-b60a-a2b76f0e405c",
+    "backend": "pi",
+    "model": "gpt-5.6-sol"
+  },
+  {
+    "type": "session.error",
+    "message": "pi: openai-codex/gpt-5.6-sol request failed: WebSocket error",
+    "fatal": false
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "error"
+  }
+]

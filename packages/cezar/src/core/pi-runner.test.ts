@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AgentEvent } from './agent-runner.js';
+import type { UiEvent } from './ui-events.js';
 import { buildChildEnv } from './agent-env.js';
 import { parseAskMarker } from './ask.js';
 import { detectEnvironment } from './backend-detect.js';
@@ -294,6 +295,125 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     let turnText = '';
     for (const event of textEvents) turnText = appendTurnText(turnText, event.text);
     expect(turnText).toBe(full);
+  });
+});
+
+function writePiRpcMock(cwd: string, name: string, afterPrompt: string): string {
+  const mockPath = join(cwd, name);
+  writeFileSync(
+    mockPath,
+    `#!/usr/bin/env node
+import readline from 'node:readline';
+const send = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const command = JSON.parse(line);
+  if (command.type === 'get_state') {
+    send({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'pi-err', model: { id: 'gpt-5.6-sol' } } });
+  } else if (command.type === 'prompt') {
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+${afterPrompt}
+    send({ type: 'turn_end', message: {}, toolResults: [] });
+    send({ type: 'agent_end', messages: [], willRetry: false });
+    send({ type: 'agent_settled' });
+  } else if (command.type === 'abort') {
+    send({ type: 'response', command: 'abort', success: true });
+  }
+}
+`,
+    { mode: 0o755 },
+  );
+  return mockPath;
+}
+
+async function runPiMock(
+  cwd: string,
+  mockPath: string,
+): Promise<{ events: AgentEvent[]; uiEvents: UiEvent[] }> {
+  const events: AgentEvent[] = [];
+  const uiEvents: UiEvent[] = [];
+  await new PiRunner({ bin: mockPath }).startSession(
+    { userPrompt: 'go', cwd, timeoutMs: 10_000 },
+    (event) => events.push(event),
+    { onUiEvent: (event) => uiEvents.push(event), autoEndAfterFirstTurn: true },
+  ).result;
+  return { events, uiEvents };
+}
+
+describe('pi provider failures on assistant message_end (#54)', () => {
+  const saved = process.env.CEZ_DRY_RUN;
+  let cwd: string;
+
+  beforeEach(() => {
+    process.env.CEZ_DRY_RUN = '1';
+    cwd = mkdtempSync(join(tmpdir(), 'cez-pi-err-'));
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CEZ_DRY_RUN;
+    else process.env.CEZ_DRY_RUN = saved;
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('emits a v1 error before turn-end for a transport diagnostic', async () => {
+    const mockPath = writePiRpcMock(
+      cwd,
+      'mock-pi-transport-error.mjs',
+      `    send({ type: 'message_end', message: {
+      role: 'assistant', content: [], provider: 'openai-codex', model: 'gpt-5.6-sol',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+      stopReason: 'error', errorMessage: 'Not Found',
+      diagnostics: [{ type: 'provider_transport_failure', error: { name: 'Error', message: 'WebSocket error', stack: 'Error: WebSocket error\\n    at extractWebSocketError' }, details: { requestBytes: 82921 } }],
+    } });`,
+    );
+    const { events, uiEvents } = await runPiMock(cwd, mockPath);
+    const types = events.map((e) => e.type);
+    expect(types.indexOf('error')).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf('error')).toBeLessThan(types.indexOf('turn-end'));
+    expect(events.find((e) => e.type === 'error')!.message).toBe(
+      'pi: openai-codex/gpt-5.6-sol request failed: WebSocket error',
+    );
+    expect(events.find((e) => e.type === 'error')!.message).not.toMatch(/not found on PATH/i);
+    expect(uiEvents).toContainEqual({
+      type: 'session.error',
+      message: 'pi: openai-codex/gpt-5.6-sol request failed: WebSocket error',
+      fatal: false,
+    });
+    expect(uiEvents.some((e) => e.type === 'turn.completed' && e.stopReason === 'error')).toBe(true);
+  });
+
+  it('falls back to errorMessage when diagnostics are absent', async () => {
+    const mockPath = writePiRpcMock(
+      cwd,
+      'mock-pi-error-message.mjs',
+      `    send({ type: 'message_end', message: {
+      role: 'assistant', content: [], provider: 'openai-codex', model: 'gpt-5.6-sol',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+      stopReason: 'error', errorMessage: 'Not Found',
+    } });`,
+    );
+    const { events } = await runPiMock(cwd, mockPath);
+    expect(events.find((e) => e.type === 'error')!.message).toBe(
+      'pi: openai-codex/gpt-5.6-sol request failed: Not Found',
+    );
+  });
+
+  it('does not fail a successful empty assistant turn', async () => {
+    const mockPath = writePiRpcMock(
+      cwd,
+      'mock-pi-empty-success.mjs',
+      `    send({ type: 'message_end', message: {
+      role: 'assistant', content: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+    } });`,
+    );
+    const { events, uiEvents } = await runPiMock(cwd, mockPath);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.some((e) => e.type === 'turn-end')).toBe(true);
+    expect(uiEvents.some((e) => e.type === 'session.error')).toBe(false);
+    expect(uiEvents.filter((e) => e.type === 'turn.completed')).toEqual([
+      { type: 'turn.completed', turnId: 'turn_1', stopReason: 'end_turn' },
+    ]);
   });
 });
 
