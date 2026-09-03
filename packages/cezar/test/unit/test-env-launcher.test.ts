@@ -40,11 +40,8 @@ function makeFixture(withSetsid: boolean): { root: string; path: string } {
   writeFileSync(join(root, '.ai/browsers/agent-browser.md'), '# test provider\n');
   writeFileSync(join(root, 'package.json'), '{"private":true}\n');
   writeFileSync(join(root, 'package-lock.json'), '{}\n');
-  // The reuse check compares tracked-source mtimes against the second-truncated
-  // startedAt (#36): a cold boot that finishes in the same wall-clock second as
-  // these files reads them as changed since boot and refuses a reuse the test
-  // expects (#31). Backdate them well outside any boot second so the warm run's
-  // verdict never depends on how fast the cold boot was.
+  // Backdate tracked sources so the #31 warm-reuse assertion never depends on
+  // how fast the cold boot was relative to these writes.
   const safelyBeforeBoot = new Date(Date.now() - 30_000);
   utimesSync(join(root, 'package.json'), safelyBeforeBoot, safelyBeforeBoot);
   utimesSync(join(root, 'package-lock.json'), safelyBeforeBoot, safelyBeforeBoot);
@@ -89,10 +86,11 @@ esac
   return { root, path: join(root, 'bin') };
 }
 
-function descriptor(root: string): { baseUrl: string; app: { pid: number } } {
+function descriptor(root: string): { baseUrl: string; app: { pid: number }; startedAt: string } {
   return JSON.parse(readFileSync(join(root, '.ai/qa/test-env.json'), 'utf8')) as {
     baseUrl: string;
     app: { pid: number };
+    startedAt: string;
   };
 }
 
@@ -151,12 +149,11 @@ for (const withSetsid of [true, false]) {
   );
 }
 
-test('a tracked file inside the boot second refuses reuse and names the file (#31, #36)', () => {
-  // Deterministic reproduction of the #31 flake's signature: the freshness check
-  // compares tracked-source mtimes against the second-truncated startedAt, so a
-  // file dated inside the boot's own second reads as changed since boot. The warm
-  // run must then cold-boot AND say why. NOTE to #36: keeping the milliseconds in
-  // startedAt turns this plant into a reuse — flip the REUSED assertion with it.
+test('a tracked file inside the boot second is reused; a later edit still refuses (#36)', () => {
+  // startedAt used to strip milliseconds, so find -newermt treated every mtime
+  // in the boot's own second as newer than boot. Keep the fraction: a file dated
+  // at the second's start (not after startedAt) must attach, and a file dated
+  // after startedAt must still refuse and name the path.
   const fixture = makeFixture(false);
   const env = { ...process.env, PATH: fixture.path, TEST_ENV_CACHE_TTL_SECONDS: '600' };
   const up = join(fixture.root, '.ai/scripts/test-env-up.sh');
@@ -165,24 +162,30 @@ test('a tracked file inside the boot second refuses reuse and names the file (#3
   const cold = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
   assert.equal(cold.status, 0, cold.stderr);
   assert.match(cold.stdout, /TEST_ENV_REUSED=0/);
-  const coldPid = descriptor(fixture.root).app.pid;
-  launchedPids.add(coldPid);
+  const first = descriptor(fixture.root);
+  launchedPids.add(first.app.pid);
+  assert.match(first.startedAt, /\.\d{3}Z$/);
 
-  const startedAt = JSON.parse(readFileSync(join(fixture.root, '.ai/qa/test-env.json'), 'utf8')).startedAt as string;
-  const insideBootSecond = new Date(Math.floor(Date.parse(startedAt) / 1000) * 1000 + 500);
+  const startedMs = Date.parse(first.startedAt);
+  const insideBootSecond = new Date(Math.floor(startedMs / 1000) * 1000);
   utimesSync(join(fixture.root, 'package.json'), insideBootSecond, insideBootSecond);
+
+  const sameSecond = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
+  assert.equal(sameSecond.status, 0, sameSecond.stderr);
+  assert.match(sameSecond.stdout, /TEST_ENV_REUSED=1/, `same-second file refused reuse:\n${sameSecond.stderr}`);
+  assert.equal(descriptor(fixture.root).app.pid, first.app.pid);
+
+  const afterBoot = new Date(startedMs + 2_000);
+  utimesSync(join(fixture.root, 'package.json'), afterBoot, afterBoot);
 
   const refused = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
   assert.equal(refused.status, 0, refused.stderr);
   assert.match(refused.stdout, /TEST_ENV_REUSED=0/);
   assert.match(refused.stderr, /source changed since boot/);
   assert.match(refused.stderr, /package\.json/);
-  // The refused reuse tore the cold app down and rebooted: swap the tracked pid.
-  launchedPids.delete(coldPid);
+  launchedPids.delete(first.app.pid);
   launchedPids.add(descriptor(fixture.root).app.pid);
 
-  // The refused reuse rebooted onto a fresh startedAt the plant predates, so the
-  // next warm run reuses again — the bail-out poisons nothing.
   const warm = spawnSync('/bin/sh', [up], { encoding: 'utf8', env, timeout: 20_000 });
   assert.equal(warm.status, 0, warm.stderr);
   assert.match(warm.stdout, /TEST_ENV_REUSED=1/, `warm boot refused reuse:\n${warm.stderr}`);

@@ -17,6 +17,8 @@
 #             api-client dist artifact that this source-aliased workspace does not produce.
 #   2026-09-03 log every try_reuse bail-out: a refused reuse still exits 0, so silent
 #             returns left the next failure undiagnosable (#31).
+#   2026-09-03 keep milliseconds in startedAt so find -newermt does not treat
+#             files from the boot's own second as changed (#36).
 set -eu
 
 # ---- project-specific parameters -------------------------------------------
@@ -384,7 +386,7 @@ write_descriptor() {
       },
       testRunner: { name: "other", config: "packages/web/e2e/vitest.config.ts" },
       platform,
-      startedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      startedAt: new Date().toISOString(),
       notes: "Booted from a production build after npm ci with CEZ_DRY_RUN=1, so workspace links/runtime dependencies are present, the agent CLIs are mocked, and no agent login/network is needed. No backing services. Stop with .ai/scripts/test-env-down.sh. App log: .ai/qa/test-env-app.log.",
     }, null, 2) + "\n");
   ' "$ENV_DESCRIPTOR" "$BASE_URL" "$PORT" "$APP_PID" \
