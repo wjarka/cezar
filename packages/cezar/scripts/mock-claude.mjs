@@ -77,6 +77,12 @@ function writeHandoffAndTodo() {
 async function respond(userText, imageCount) {
   turn += 1;
   await sleep(250);
+  // `mock:mid-work` → use a tool, then end markerless with progress prose and
+  // no question. This reproduces an agent stopping between implementation
+  // steps while keeping the session open (#48).
+  const rhetoricalMidWork = userText.includes('mock:rhetorical-mid-work');
+  const midWork = rhetoricalMidWork || userText.includes('mock:mid-work');
+  const questionOptions = userText.includes('mock:question-options');
   // `mock:done` anywhere in the message → the reply ends with the CEZ:DONE
   // completion marker (#347), so the auto-close path is testable dry.
   const doneMarker = userText.includes('mock:done') ? '\n\nCEZ:DONE' : '';
@@ -404,6 +410,24 @@ async function respond(userText, imageCount) {
     await sleep(100);
   }
 
+  if (midWork && turn > 1) {
+    const id = `toolu_mid_work_${turn}`;
+    emit({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: 'src/example.ts' } }],
+        usage: { input_tokens: 40, output_tokens: 20 },
+      },
+    });
+    await sleep(100);
+    emit({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'example source' }] },
+    });
+    await sleep(100);
+  }
+
   if (turn === 1) {
     // Leave a visible trace in the cwd (the task worktree under spec 006) so
     // the Diff view has something real to show in dry runs. Exactly one line
@@ -475,7 +499,7 @@ async function respond(userText, imageCount) {
       type: 'assistant',
       message: {
         role: 'assistant',
-        content: [{ type: 'text', text: `Done with the first pass — opened a draft PR: https://github.com/open-mercato/demo/pull/123. Anything to adjust? (dry-run mock)${refsMarkers}${doneMarker}${monitoringMarker}${askMarker}` }],
+        content: [{ type: 'text', text: `${questionOptions ? 'Which implementation should I use?\n\n- Minimal\n- Expanded' : rhetoricalMidWork ? 'Why did the test fail? I found the cause and will implement the fix.' : midWork ? "I'll write failing tests first, then implement the fix." : 'Done with the first pass — opened a draft PR: https://github.com/open-mercato/demo/pull/123. Anything to adjust? (dry-run mock)'}${refsMarkers}${doneMarker}${monitoringMarker}${askMarker}` }],
         usage: { input_tokens: 300, output_tokens: 90 },
       },
     });
@@ -495,7 +519,7 @@ async function respond(userText, imageCount) {
     type: 'assistant',
     message: {
       role: 'assistant',
-      content: [{ type: 'text', text: `Follow-up #${turn - 1} received: "${userText.slice(0, 100)}".${imgNote} Applied (dry run).${refsMarkers}${doneMarker}${monitoringMarker}${askMarker}` }],
+      content: [{ type: 'text', text: `${midWork ? 'The implementation is in progress; tests are next.' : `Follow-up #${turn - 1} received: "${userText.slice(0, 100)}".${imgNote} Applied (dry run).`}${refsMarkers}${doneMarker}${monitoringMarker}${askMarker}` }],
       usage: { input_tokens: 200, output_tokens: 60 },
     },
   });

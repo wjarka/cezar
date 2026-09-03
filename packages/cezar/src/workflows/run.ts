@@ -213,6 +213,17 @@ const AUTONOMOUS_NUDGE =
 const MONITORING_WAKE_NUDGE =
   'Re-check the downstream work you were monitoring. Continue toward the task goal; emit CEZ:MONITORING again only if it is still pending.';
 
+/** A question at the handoff boundary may be followed by Markdown answer choices. */
+function hasUserQuestion(text: string): boolean {
+  const lines = text.trimEnd().split('\n');
+  while (lines.length > 0) {
+    const line = lines.pop()!.trim();
+    if (!line || /^(?:[-*+]|\d+[.)])\s+\S/.test(line)) continue;
+    return /\?(?:\s*\([^()]*\))?$/.test(line);
+  }
+  return false;
+}
+
 /**
  * Auto-resume after a provider usage limit (spec 2026-08-03-auto-resume-after-usage-limit).
  *
@@ -2228,6 +2239,7 @@ export class RunManager {
     let stepCost = 0;
     let turnText = '';
     let sawClaudeScheduleWakeup = false;
+    let sawToolUse = false;
     let sessionError: string | undefined;
     const sink = this.makeUiSink(runId, stepId);
     const onEvent = (event: AgentEvent) => {
@@ -2259,6 +2271,7 @@ export class RunManager {
         stepCost += event.usd;
         this.store.updateStep(runId, stepId, { costUsd: stepCost });
       }
+      if (event.type === 'tool-call') sawToolUse = true;
       if (isClaudeScheduleWakeup(event, backend)) sawClaudeScheduleWakeup = true;
       if (event.type === 'turn-end') {
         // Belt-and-braces: v2 `turn.completed` already flushed the delta
@@ -2278,8 +2291,11 @@ export class RunManager {
           !done &&
           !ask &&
           (MONITORING_MARKER_RE.test(turnText.trimEnd()) || sawClaudeScheduleWakeup);
+        const markerlessMidWork =
+          askResult?.kind === 'none' && !monitoring && sawToolUse && !hasUserQuestion(turnText);
         turnText = '';
         sawClaudeScheduleWakeup = false;
+        sawToolUse = false;
         if (askRejection) this.store.appendEvent(runId, { type: 'note', message: askRejection, stepId });
         if (done) {
           // Goal achieved (agent contract, #347) — same as in runAgentStep.
@@ -2288,23 +2304,13 @@ export class RunManager {
           state.session?.end();
           return;
         }
+        let autoContinued = false;
         if (sessionOpen) {
-          // Autonomous (#autonomous): never hand the ball back to the user. Nudge the agent to
-          // keep going (bounded by MAX_AUTO_CONTINUES) instead of parking at `waiting`.
-          const autoContinued =
-            state.autonomous &&
-            (state.autoContinues ?? 0) < MAX_AUTO_CONTINUES &&
-            !state.cancelled &&
-            (() => {
-              const sent = state.session?.sendMessage([{ type: 'text', text: AUTONOMOUS_NUDGE }]);
-              if (!sent) return false;
-              state.autoContinues = (state.autoContinues ?? 0) + 1;
-              this.store.appendEvent(runId, {
-                type: 'note',
-                message: `autonomous — continuing without pausing (${state.autoContinues}/${MAX_AUTO_CONTINUES})`,
-              });
-              return true;
-            })();
+          autoContinued = this.tryAutoContinueTurn(
+            runId,
+            state,
+            state.autonomous === true || markerlessMidWork,
+          );
           if (!autoContinued) {
             // `CEZ:ASK` → park `waiting` (attention) AND surface the structured
             // question as an ask card (#473). `CEZ:MONITORING` or Claude's native
@@ -2340,7 +2346,7 @@ export class RunManager {
         appendHandoffHeartbeat(
           this.dataDir,
           runId,
-          `turn complete — status=${monitoring ? 'monitoring' : sessionOpen ? 'waiting' : 'running'}`,
+          `turn complete — status=${autoContinued ? 'running' : monitoring ? 'monitoring' : sessionOpen ? 'waiting' : 'running'}`,
         );
       }
     };
@@ -2880,6 +2886,7 @@ export class RunManager {
     let stepCost = stepRecord?.costUsd ?? 0;
     let turnText = '';
     let sawClaudeScheduleWakeup = false;
+    let sawToolUse = false;
     let sessionError: string | undefined;
     const sink = this.makeUiSink(runId, step.id);
     const onEvent = (event: AgentEvent) => {
@@ -2912,6 +2919,7 @@ export class RunManager {
         stepCost += event.usd;
         this.store.updateStep(runId, step.id, { costUsd: stepCost });
       }
+      if (event.type === 'tool-call') sawToolUse = true;
       if (isClaudeScheduleWakeup(event, backend)) sawClaudeScheduleWakeup = true;
       if (event.type === 'turn-end') {
         // v2 `turn.completed` already flushed the coalescers; the v1 turn
@@ -2931,8 +2939,11 @@ export class RunManager {
           !done &&
           !ask &&
           (MONITORING_MARKER_RE.test(turnText.trimEnd()) || sawClaudeScheduleWakeup);
+        const markerlessMidWork =
+          askResult?.kind === 'none' && !monitoring && sawToolUse && !hasUserQuestion(turnText);
         turnText = '';
         sawClaudeScheduleWakeup = false;
+        sawToolUse = false;
         if (askRejection) emit({ type: 'note', stepId: step.id, message: askRejection });
         if (done) {
           // Goal achieved (agent contract, #347): close the session instead
@@ -2943,29 +2954,33 @@ export class RunManager {
           return;
         }
         const waiting = interactive && sessionOpen;
+        let autoContinued = false;
         if (waiting) {
-          // Turn over, session open. Either the ball is in the user's court
-          // (`waiting`) — optionally with a structured `CEZ:ASK` question the
-          // cockpit renders as an ask card (#473) — or the agent declared it is
-          // still working through `CEZ:MONITORING` or Claude's native
-          // `ScheduleWakeup`. Monitoring parks as `running` with no user-wait
-          // idle timer, so the cockpit stays non-attention (#490, #46).
-          if (ask) emitAskRequested(sink, ask);
-          if (monitoring) {
-            this.store.updateRun(runId, { status: 'running', activity: 'monitoring' });
-            this.store.updateStep(runId, step.id, { status: 'running' });
-            this.monitoring.add(runId);
-            this.clearIdleTimer(state);
-            this.armMonitoringWakeTimer(runId, state);
-          } else {
-            this.store.updateRun(runId, { status: 'waiting', activity: undefined });
-            this.store.updateStep(runId, step.id, { status: 'waiting' });
-            this.monitoring.delete(runId);
-            this.clearMonitoringWakeTimer(state, runId);
+          autoContinued = this.tryAutoContinueTurn(runId, state, markerlessMidWork);
+          if (!autoContinued) {
+            // Turn over, session open. Either the ball is in the user's court
+            // (`waiting`) — optionally with a structured `CEZ:ASK` question the
+            // cockpit renders as an ask card (#473) — or the agent declared it is
+            // still working through `CEZ:MONITORING` or Claude's native
+            // `ScheduleWakeup`. Monitoring parks as `running` with no user-wait
+            // idle timer, so the cockpit stays non-attention (#490, #46).
+            if (ask) emitAskRequested(sink, ask);
+            if (monitoring) {
+              this.store.updateRun(runId, { status: 'running', activity: 'monitoring' });
+              this.store.updateStep(runId, step.id, { status: 'running' });
+              this.monitoring.add(runId);
+              this.clearIdleTimer(state);
+              this.armMonitoringWakeTimer(runId, state);
+            } else {
+              this.store.updateRun(runId, { status: 'waiting', activity: undefined });
+              this.store.updateStep(runId, step.id, { status: 'waiting' });
+              this.monitoring.delete(runId);
+              this.clearMonitoringWakeTimer(state, runId);
+            }
+            this.waiting.add(runId);
+            if (!monitoring) this.armIdleTimer(runId, state);
+            this.releaseSlot(); // the freed slot can start a queued run right away — in any project
           }
-          this.waiting.add(runId);
-          if (!monitoring) this.armIdleTimer(runId, state);
-          this.releaseSlot(); // the freed slot can start a queued run right away — in any project
         }
         // The window is proven open — see the twin in `runContinuation`.
         if (this.store.getRun(runId)?.autoResumeAttempts !== undefined) {
@@ -2976,7 +2991,7 @@ export class RunManager {
         appendHandoffHeartbeat(
           this.dataDir,
           runId,
-          `turn complete — status=${monitoring ? 'monitoring' : waiting ? 'waiting' : 'running'}`,
+          `turn complete — status=${autoContinued ? 'running' : monitoring ? 'monitoring' : waiting ? 'waiting' : 'running'}`,
         );
       }
     };
@@ -3108,6 +3123,22 @@ export class RunManager {
       persist: (event) => this.store.appendEvent(runId, { ...event, stepId }),
       emitLive: (event) => this.store.emitEphemeral(runId, { ...event, stepId }),
     });
+  }
+
+  /** Continue autonomous runs and markerless tool turns through one bounded path. */
+  private tryAutoContinueTurn(runId: string, state: ActiveRun, shouldContinue: boolean): boolean {
+    if (!shouldContinue || (state.autoContinues ?? 0) >= MAX_AUTO_CONTINUES) {
+      return false;
+    }
+    if (state.cancelled) return false;
+    const sent = state.session?.sendMessage([{ type: 'text', text: AUTONOMOUS_NUDGE }]);
+    if (!sent) return false;
+    state.autoContinues = (state.autoContinues ?? 0) + 1;
+    this.store.appendEvent(runId, {
+      type: 'note',
+      message: `${state.autonomous ? 'autonomous' : 'work still in progress'} — continuing without pausing (${state.autoContinues}/${MAX_AUTO_CONTINUES})`,
+    });
+    return true;
   }
 
   /** Native backend asks arrive before turn-end. Persist and park immediately

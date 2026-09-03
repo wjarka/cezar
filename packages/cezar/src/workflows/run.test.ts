@@ -75,6 +75,7 @@ describe('RunManager directional usage accounting', () => {
   });
 
   afterEach(() => {
+    manager.dispose();
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -267,6 +268,7 @@ describe('RunManager.recordTurnEnd', () => {
   });
 
   afterAll(() => {
+    manager.dispose();
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -903,8 +905,8 @@ describe('a single agent step plus a check step gets NO chain note (#410)', () =
 /**
  * #490 — the `CEZ:MONITORING` marker parks a still-working turn-end as
  * `running`/`activity:'monitoring'` (a non-attention state) instead of
- * `waiting`, while a markerless turn-end still parks as `waiting`. Resuming
- * clears the activity. Driven dry through the mock (`mock:monitoring`).
+ * `waiting`, while a markerless turn-end that genuinely needs the user still
+ * parks as `waiting`. Resuming clears the activity. Driven dry through the mock.
  */
 describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () => {
   // Fresh repo + manager per test: these runs PARK (they never reach a terminal
@@ -936,6 +938,7 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
 
   afterEach(() => {
     if (currentId) manager.cancel(currentId); // release the session + repo lock
+    manager.dispose();
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -1087,7 +1090,7 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     expect(events.some((event) => event.type === 'user-message')).toBe(false);
   }, 30_000);
 
-  it('a markerless turn-end still parks as waiting with no activity', async () => {
+  it('a markerless turn with tools and a user-facing question still parks as waiting', async () => {
     const record = manager.startRun(SINGLE_STEP, { task: 'just do the thing', worktree: false });
     currentId = record.id;
     await waitFor(record.id, (r) => r?.status === 'waiting');
@@ -1097,6 +1100,104 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     }).active.get(record.id);
     expect(state?.idleTimer).toBeDefined(); // genuine user waits still expire after IDLE_TIMEOUT_MS
     expect(state?.monitoringWakeTimer).toBeUndefined();
+  }, 30_000);
+
+  it('a user-facing question followed by answer choices still parks as waiting', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:question-options choose an approach', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+
+    const state = (manager as unknown as { active: Map<string, { idleTimer?: NodeJS.Timeout }> }).active.get(record.id);
+    expect(state?.idleTimer).toBeDefined();
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events).not.toContain('continuing without pausing');
+  }, 30_000);
+
+  it('an autonomous first turn still honors CEZ:ASK', async () => {
+    const record = manager.startRun(SINGLE_STEP, {
+      task: 'mock:ask choose an approach',
+      autonomous: true,
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, () => {
+      const path = join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`);
+      return existsSync(path) && readFileSync(path, 'utf8').includes('"type":"turn-end"');
+    });
+
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events).toContain('"type":"ask.requested"');
+    expect(store.getRun(record.id)?.status).toBe('waiting');
+  }, 30_000);
+
+  it('a markerless first turn with tools and no question auto-continues once', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:mid-work implement it', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, () => {
+      const path = join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`);
+      return existsSync(path) && readFileSync(path, 'utf8').includes('continuing without pausing (1/40)');
+    });
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events.match(/continuing without pausing \(1\/40\)/g)).toHaveLength(1);
+  }, 30_000);
+
+  it('a resolved rhetorical question does not turn progress into a user wait', async () => {
+    const record = manager.startRun(SINGLE_STEP, {
+      task: 'mock:rhetorical-mid-work implement it',
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, () => {
+      const path = join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`);
+      return existsSync(path) && readFileSync(path, 'utf8').includes('continuing without pausing (1/40)');
+    });
+  }, 30_000);
+
+  it('a markerless continuation with tools and no question auto-continues once', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'finish a normal first turn', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    expect(manager.finish(record.id)).toBe(true);
+    await waitFor(record.id, (r) => r?.status === 'done' || r?.status === 'review');
+
+    expect(manager.continueRun(record.id, { text: 'mock:mid-work continue implementation' })).toEqual({ ok: true });
+    await waitFor(record.id, () => {
+      const path = join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`);
+      return readFileSync(path, 'utf8').includes('continuing without pausing (1/40)');
+    });
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+  }, 30_000);
+
+  it('a markerless continuation with no tools remains a genuine timed wait', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'finish a normal first turn', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+
+    expect(manager.sendMessage(record.id, [{ type: 'text', text: 'plain follow-up' }])).toBe(true);
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    const state = (manager as unknown as { active: Map<string, { idleTimer?: NodeJS.Timeout }> }).active.get(record.id);
+    expect(state?.idleTimer).toBeDefined();
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events).not.toContain('continuing without pausing');
+  }, 30_000);
+
+  it('the automatic continuation cap still parks a tool-using turn', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'finish a normal first turn', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    const state = (manager as unknown as {
+      active: Map<string, { autoContinues?: number; idleTimer?: NodeJS.Timeout }>;
+    }).active.get(record.id);
+    expect(state).toBeDefined();
+    state!.autoContinues = 40;
+
+    expect(manager.sendMessage(record.id, [{ type: 'text', text: 'mock:mid-work continue implementation' }])).toBe(true);
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    expect(state?.idleTimer).toBeDefined();
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events).not.toContain('continuing without pausing');
   }, 30_000);
 
   it('strips the CEZ:MONITORING marker from server-emitted v1 text events', async () => {
