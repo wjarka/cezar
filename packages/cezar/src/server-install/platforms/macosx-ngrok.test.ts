@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cezarLaunchdPlist, launchdPlist, macosxNgrok } from './macosx-ngrok.ts';
@@ -7,7 +7,7 @@ import { availablePlatformIds, getStrategy } from '../strategies.ts';
 import { runInstall, runUninstall } from '../engine.ts';
 import { loadServerState } from '../state.ts';
 import { createAutoUi } from '../ui.ts';
-import type { Runner } from '../types.ts';
+import type { InstallContext, Runner, Ui } from '../types.ts';
 
 const okRunner: Runner = { capture: async () => ({ code: 0, stdout: '', stderr: '' }), interactive: async () => 0 };
 
@@ -238,5 +238,121 @@ describe('macosx-ngrok review fixes (PR #423)', () => {
     expect(domainValidate?.('https://cezar.ngrok.app')).toBeDefined();
     expect(domainValidate?.('cezar.ngrok.app')).toBeUndefined();
     expect(domainValidate?.('')).toBeUndefined(); // blank = ephemeral, allowed
+  });
+});
+
+describe('macosx-ngrok redeploy npx-cache refresh (#32)', () => {
+  let home: string;
+  let cache: string;
+  const originalHome = process.env.HOME;
+  const originalCache = process.env.npm_config_cache;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'cez-mac-npx-home-'));
+    cache = mkdtempSync(join(tmpdir(), 'cez-mac-npx-cache-'));
+    process.env.HOME = home;
+    process.env.npm_config_cache = cache;
+    mkdirSync(join(home, 'Library', 'LaunchAgents'), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalCache === undefined) delete process.env.npm_config_cache;
+    else process.env.npm_config_cache = originalCache;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  });
+
+  function writeCockpitPlist(argv: string[]): void {
+    writeFileSync(
+      join(home, 'Library', 'LaunchAgents', 'ai.cezar.cockpit.plist'),
+      cezarLaunchdPlist('/repo', 4321, argv),
+    );
+  }
+
+  function plantCezarionCache(): string {
+    const entry = join(cache, '_npx', 'aaaa', 'node_modules', 'cezarion');
+    mkdirSync(entry, { recursive: true });
+    writeFileSync(join(entry, 'x'), '');
+    return join(cache, '_npx', 'aaaa');
+  }
+
+  function recordingInteractive(): { interactive: Runner['interactive']; calls: Array<{ program: string; args: string[] }> } {
+    const calls: Array<{ program: string; args: string[] }> = [];
+    const interactive: Runner['interactive'] = async (program, args) => {
+      calls.push({ program, args });
+      return 0;
+    };
+    return { interactive, calls };
+  }
+
+  function ctxFor(interactive: Runner['interactive']): InstallContext {
+    const runner: Runner = {
+      capture: async (program) =>
+        program === 'curl' ? { code: 0, stdout: 'public_url', stderr: '' } : { code: 0, stdout: '', stderr: '' },
+      interactive,
+    };
+    return {
+      state: { schema: 1, installed: true, primaryPort: 4321, steps: {} },
+      ui: createAutoUi() as Ui,
+      instance: 'default',
+      runner,
+      save: async () => {},
+      dryRun: false,
+      assumeYes: true,
+      reconfigure: new Set(),
+      repoRoot: '/repo',
+      now: '2026-07-16T00:00:00.000Z',
+      prefs: {},
+    };
+  }
+
+  function kickstarted(calls: Array<{ program: string; args: string[] }>): boolean {
+    return calls.some((call) => call.program === 'launchctl' && call.args[0] === 'kickstart');
+  }
+
+  it('clears the cached cezarion build before kickstart when the agent is an npx launch', async () => {
+    writeCockpitPlist(['/n/npx', '--yes', 'cezarion']);
+    const cached = plantCezarionCache();
+    const { interactive, calls } = recordingInteractive();
+
+    await macosxNgrok.redeploy!(ctxFor(interactive));
+
+    expect(existsSync(cached)).toBe(false);
+    expect(kickstarted(calls)).toBe(true);
+  });
+
+  it('does not clear the npx cache for a checkout-launched agent', async () => {
+    writeCockpitPlist(['/usr/bin/node', '/home/cezar/cezar/dist/index.js']);
+    const cached = plantCezarionCache();
+    const { interactive, calls } = recordingInteractive();
+
+    await macosxNgrok.redeploy!(ctxFor(interactive));
+
+    expect(existsSync(cached)).toBe(true);
+    expect(kickstarted(calls)).toBe(true);
+  });
+
+  it('does not clear the npx cache for a global-bin agent', async () => {
+    writeCockpitPlist(['/usr/bin/node', '/usr/local/bin/cezarion']);
+    const cached = plantCezarionCache();
+    const { interactive, calls } = recordingInteractive();
+
+    await macosxNgrok.redeploy!(ctxFor(interactive));
+
+    expect(existsSync(cached)).toBe(true);
+    expect(kickstarted(calls)).toBe(true);
+  });
+
+  it('aborts before kickstart when the npx cache cannot be read', async () => {
+    writeCockpitPlist(['/n/npx', '--yes', 'cezarion']);
+    writeFileSync(join(cache, '_npx'), 'not a directory');
+    const { interactive, calls } = recordingInteractive();
+
+    await expect(macosxNgrok.redeploy!(ctxFor(interactive))).rejects.toThrow(
+      /cannot inspect the npx cache.*service was not restarted/,
+    );
+    expect(calls).toEqual([]);
   });
 });

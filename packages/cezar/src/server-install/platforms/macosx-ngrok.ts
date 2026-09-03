@@ -1,9 +1,10 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CANCEL, PreflightError, type InstallContext, type InstallStep, type PlatformStrategy, type StepArtifact } from '../types.ts';
 import { brewInstallTool, brewRemoveHint, depCheckStep, HOSTNAME_RE, owned, shared, StepAborted, StepCancelled, verifyCommand } from '../steps.ts';
+import { refreshNpxCacheForRedeploy } from '../npx-cache.ts';
 
 /**
  * The `macosx-ngrok` strategy: the app runs locally on a Mac and ngrok is the
@@ -194,6 +195,23 @@ const CEZAR_PLIST_LABEL = 'ai.cezar.cockpit';
 const OFFICIAL_CLI_PKG = 'cezarion';
 const cezarPlistPath = (): string => join(homedir(), 'Library', 'LaunchAgents', `${CEZAR_PLIST_LABEL}.plist`);
 
+/** Live launchd `ProgramArguments` joined into one string so the shared npx-cache
+ *  helper can classify the launch form the same way ubuntu-vps classifies ExecStart.
+ *  Empty string when the plist can't be read — callers then skip the cache refresh
+ *  rather than guessing. */
+function readCezarProgramArguments(): string {
+  try {
+    const xml = readFileSync(cezarPlistPath(), 'utf8');
+    const inner = xml.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1];
+    if (inner === undefined) return '';
+    return [...inner.matchAll(/<string>([\s\S]*?)<\/string>/g)]
+      .map((m) => (m[1] ?? '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>'))
+      .join(' ');
+  } catch {
+    return '';
+  }
+}
+
 /** Resolve the argv array for the cezar launchd agent, mirroring how the CLI was launched. */
 async function resolveCezarArgv(ctx: InstallContext): Promise<string[]> {
   const node = process.execPath;
@@ -335,6 +353,13 @@ export const macosxNgrok: PlatformStrategy = {
     ];
   },
   async redeploy(ctx: InstallContext) {
+    // #32: an npx-launched agent re-execs its cached build on kickstart, so a
+    // deploy that doesn't invalidate the npx cache never actually updates.
+    // Clear the cezarion cache first (read the live ProgramArguments to know the
+    // launch form); a checkout / global agent is left alone.
+    refreshNpxCacheForRedeploy(ctx, readCezarProgramArguments(), {
+      reconfigureHint: `  cez server-install --platform macosx-ngrok --reconfigure autostart`,
+    });
     // Restart both the cezar cockpit and the ngrok tunnel, then re-verify.
     if (ctx.dryRun) {
       ctx.ui.info('DRY RUN — would restart the cezar and ngrok launchd agents and re-verify.');
