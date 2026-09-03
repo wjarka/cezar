@@ -57,6 +57,22 @@ async function makeFixture(version = '0.1.5'): Promise<string> {
   );
   await writeFile(join(root, 'packages', 'cezar', 'index.js'), 'export {};\n');
 
+  await mkdir(join(root, 'packages', 'web'), { recursive: true });
+  await writeFile(
+    join(root, 'packages', 'web', 'package.json'),
+    `${JSON.stringify(
+      {
+        name: '@scope/fake-web',
+        version,
+        private: true,
+        dependencies: { '@scope/fake-client': `^${version}` },
+        devDependencies: { '@scope/fake-root': `^${version}` },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
   await mkdir(join(root, 'alias-cezarion'));
   await writeFile(
     join(root, 'alias-cezarion', 'package.json'),
@@ -114,13 +130,17 @@ test('a patch bump stamps every manifest, keeps the caret ranges, and emits the 
 
     const clientPkg = await readPkg(root, 'packages', 'api-client');
     const cezarPkg = await readPkg(root, 'packages', 'cezar');
+    const webPkg = await readPkg(root, 'packages', 'web');
     const aliasPkg = await readPkg(root, 'alias-cezarion');
     assert.equal(clientPkg.version, '0.1.6');
     assert.equal(cezarPkg.version, '0.1.6');
+    assert.equal(webPkg.version, '0.1.6');
     assert.equal(aliasPkg.version, '0.1.6');
     // Caret, not an exact pin — the stable-release contract, on both edges.
     assert.deepEqual(aliasPkg.dependencies, { '@scope/fake-root': '^0.1.6' });
     assert.deepEqual(cezarPkg.devDependencies, { '@scope/fake-client': '^0.1.6' });
+    assert.deepEqual(webPkg.dependencies, { '@scope/fake-client': '^0.1.6' });
+    assert.deepEqual(webPkg.devDependencies, { '@scope/fake-root': '^0.1.6' });
 
     // The workspace root publishes nothing and must be left exactly as it was.
     const rootPkg = await readPkg(root);
@@ -158,6 +178,7 @@ test('a private package is stamped but never published', { timeout: 120_000 }, a
       !/npm publish[^\n]*\(@scope\/fake-client\)/.test(stdout),
       'a private package must not be published',
     );
+    assert.match(stdout, /@scope\/fake-web is private — stamped to 0\.1\.6, not published/);
     // The other two still publish.
     assert.match(stdout, /\(@scope\/fake-root\)/);
     assert.match(stdout, /\(fake-alias\)/);

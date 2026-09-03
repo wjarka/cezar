@@ -45,6 +45,13 @@ describe('stampStableManifests', () => {
       files: ['dist'],
       devDependencies: { '@scope/client': '^0.1.5' },
     },
+    web: {
+      name: '@scope/web',
+      version: '0.1.5',
+      private: true,
+      dependencies: { '@scope/client': '^0.1.5' },
+      devDependencies: { '@scope/impl': '^0.1.5' },
+    },
     alias: { name: 'impl-cli', version: '0.1.5', dependencies: { '@scope/impl': '^0.1.5' } },
   });
 
@@ -53,11 +60,14 @@ describe('stampStableManifests', () => {
 
     expect(stamped.apiClient.version).toBe('0.1.6');
     expect(stamped.cezar.version).toBe('0.1.6');
+    expect(stamped.web.version).toBe('0.1.6');
     expect(stamped.alias.version).toBe('0.1.6');
     expect(stamped.cezar.files).toEqual(['dist']); // passthrough untouched
     // Caret, not an exact pin — the opposite of the snapshot stamper.
     expect(stamped.alias.dependencies).toEqual({ '@scope/impl': '^0.1.6' });
     expect(stamped.cezar.devDependencies).toEqual({ '@scope/client': '^0.1.6' });
+    expect(stamped.web.dependencies).toEqual({ '@scope/client': '^0.1.6' });
+    expect(stamped.web.devDependencies).toEqual({ '@scope/impl': '^0.1.6' });
   });
 
   it('re-pins the api-client wherever it is declared, so the dev→runtime move is transparent', () => {

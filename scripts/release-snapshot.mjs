@@ -38,7 +38,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isPublishable } from '../packages/cezar/dist/release/manifests.js';
+import { isPublishable, RELEASE_MANIFEST_DIRS } from '../packages/cezar/dist/release/manifests.js';
 import {
   buildInstallLines,
   computeSnapshot,
@@ -48,13 +48,11 @@ import {
 const repoRoot = process.env.CEZ_SNAPSHOT_ROOT
   ? path.resolve(process.env.CEZ_SNAPSHOT_ROOT)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// The workspace root publishes nothing; every publishable manifest is named here explicitly.
-const dirs = {
-  contract: path.join(repoRoot, 'packages/contract'),
-  apiClient: path.join(repoRoot, 'packages/api-client'),
-  cezar: path.join(repoRoot, 'packages/cezar'),
-  alias: path.join(repoRoot, 'alias-cezarion'),
-};
+// The workspace root publishes nothing; every stamped manifest is named by RELEASE_MANIFEST_DIRS.
+const order = Object.keys(RELEASE_MANIFEST_DIRS);
+const dirs = Object.fromEntries(
+  Object.entries(RELEASE_MANIFEST_DIRS).map(([key, rel]) => [key, path.join(repoRoot, rel)]),
+);
 
 const readManifest = (dir) => JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
 const writeManifest = (dir, pkg) =>
@@ -72,12 +70,7 @@ const emitOutput = (result) => {
   }
 };
 
-const manifests = {
-  contract: readManifest(dirs.contract),
-  apiClient: readManifest(dirs.apiClient),
-  cezar: readManifest(dirs.cezar),
-  alias: readManifest(dirs.alias),
-};
+const manifests = Object.fromEntries(order.map((key) => [key, readManifest(dirs[key])]));
 
 const prNumberRaw = process.env.PR_NUMBER ?? '';
 // The nightly channel is named after the UTC day it was cut. Overridable via env so
@@ -111,7 +104,6 @@ if (!dryRun && !token) {
 }
 
 const stamped = stampManifests(manifests, plan.version);
-const order = ['contract', 'apiClient', 'cezar', 'alias'];
 for (const key of order) writeManifest(dirs[key], stamped[key]);
 console.log(
   `release-snapshot: stamped ${order.map((key) => stamped[key].name).join(' + ')} to ${plan.version} (dist-tag ${plan.distTag}${dryRun ? ', dry run' : ''})`,

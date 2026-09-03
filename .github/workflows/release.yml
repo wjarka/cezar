@@ -93,7 +93,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add packages/api-client/package.json packages/cezar/package.json alias-cezarion/package.json
+          npm install --package-lock-only --ignore-scripts
+          git add packages/*/package.json alias-cezarion/package.json package-lock.json
           git commit -m "chore(release): v${VERSION}"
           git push origin "$BRANCH"
           gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
@@ -105,23 +106,20 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RESULT: ${{ steps.release.outputs.version }}
-          ROOT_NAME: ${{ steps.release.outputs.rootName }}
-          API_CLIENT_NAME: ${{ steps.release.outputs.apiClientName }}
+          PUBLISHED_NAMES: ${{ steps.release.outputs.publishedNames }}
           ALIAS_NAME: ${{ steps.release.outputs.aliasName }}
         with:
           script: |
             const version = process.env.RESULT;
-            const root = process.env.ROOT_NAME;
-            const apiClient = process.env.API_CLIENT_NAME;
             const alias = process.env.ALIAS_NAME;
+            const published = (process.env.PUBLISHED_NAMES ?? '').split(',').filter(Boolean);
+            const rows = published.map((name) => `| \`${name}\` | \`${version}\` |`);
             const body = [
               '## Published packages',
               '',
               '| Package | Version |',
               '|---|---|',
-              `| \`${root}\` | \`${version}\` |`,
-              `| \`${apiClient}\` | \`${version}\` |`,
-              `| \`${alias}\` | \`${version}\` |`,
+              ...rows,
               '',
               '### Install',
               '',

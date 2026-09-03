@@ -151,6 +151,13 @@ describe('stampManifests', () => {
       bin: { cezar: 'dist/index.js' },
       devDependencies: { '@open-mercato/cezar-api-client': '^0.1.5' },
     },
+    web: {
+      name: '@open-mercato/cezar-web',
+      version: '0.1.5',
+      private: true,
+      dependencies: { '@open-mercato/cezar-api-client': '^0.1.5' },
+      devDependencies: { '@open-mercato/cezar': '^0.1.5' },
+    },
     alias: {
       name: 'cezar-cli',
       version: '0.1.5',
@@ -162,6 +169,7 @@ describe('stampManifests', () => {
     const stamped = stampManifests(set(), '0.1.5-pr482.123');
     expect(stamped.apiClient.version).toBe('0.1.5-pr482.123');
     expect(stamped.cezar.version).toBe('0.1.5-pr482.123');
+    expect(stamped.web.version).toBe('0.1.5-pr482.123');
     expect(stamped.alias.version).toBe('0.1.5-pr482.123');
     // Exact, no range: `npx cezar-cli@<v>` must run this PR's code, and the service must
     // resolve the api-client it was cut with.
@@ -169,6 +177,10 @@ describe('stampManifests', () => {
     expect(stamped.cezar.devDependencies).toEqual({
       '@open-mercato/cezar-api-client': '0.1.5-pr482.123',
     });
+    expect(stamped.web.dependencies).toEqual({
+      '@open-mercato/cezar-api-client': '0.1.5-pr482.123',
+    });
+    expect(stamped.web.devDependencies).toEqual({ '@open-mercato/cezar': '0.1.5-pr482.123' });
   });
 
   it('pins against whatever the packages are currently named (rename-proof)', () => {
@@ -177,12 +189,20 @@ describe('stampManifests', () => {
         contract: { name: '@old/contract', version: '0.1.5' },
         apiClient: { name: '@old/client', version: '0.1.5' },
         cezar: { name: '@pat-lewczuk/cezar', version: '0.1.5', dependencies: { '@old/client': '^0.1.5' } },
+        web: {
+          name: '@old/web',
+          version: '0.1.5',
+          dependencies: { '@old/client': '^0.1.5' },
+          devDependencies: { '@pat-lewczuk/cezar': '^0.1.5' },
+        },
         alias: { name: 'cezar-cli', version: '0.1.5', dependencies: { '@pat-lewczuk/cezar': '^0.1.5' } },
       },
       '0.1.5-develop.7',
     );
     expect(stamped.alias.dependencies).toEqual({ '@pat-lewczuk/cezar': '0.1.5-develop.7' });
     expect(stamped.cezar.dependencies).toEqual({ '@old/client': '0.1.5-develop.7' });
+    expect(stamped.web.dependencies).toEqual({ '@old/client': '0.1.5-develop.7' });
+    expect(stamped.web.devDependencies).toEqual({ '@pat-lewczuk/cezar': '0.1.5-develop.7' });
   });
 
   it('does not mutate the inputs and passes unrelated fields through', () => {

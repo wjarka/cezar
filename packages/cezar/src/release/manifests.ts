@@ -34,13 +34,29 @@ export function isPublishable(pkg: ManifestLike): boolean {
 }
 
 /**
+ * Relative dirs of every manifest a release stamps, keyed as `ReleaseManifests`.
+ *
+ * The completeness test walks the workspace root's `workspaces` array against these values, so a
+ * new workspace that is not listed here fails CI rather than shipping a bump `npm ci` cannot
+ * install. `alias` is not a workspace (it lives next to `packages/`) and is the one extra entry.
+ */
+export const RELEASE_MANIFEST_DIRS = {
+  contract: 'packages/contract',
+  apiClient: 'packages/api-client',
+  cezar: 'packages/cezar',
+  web: 'packages/web',
+  alias: 'alias-cezarion',
+} as const;
+
+/**
  * Every manifest a release stamps.
  *
  * The order of the fields is the order they must be PUBLISHED in, because each one depends on
  * the one before it: the alias is a bin-shim over the service, and the service (from the phase
  * where it stops merely testing against the client and starts importing it) depends on the
  * api-client. Publishing the dependent first would briefly advertise a version of its
- * dependency that does not exist on the registry yet.
+ * dependency that does not exist on the registry yet. Private members of the set are still
+ * stamped — they are simply skipped at publish time.
  */
 export interface ReleaseManifests {
   /**
@@ -56,6 +72,12 @@ export interface ReleaseManifests {
   apiClient: ManifestLike;
   /** The published service + CLI. */
   cezar: ManifestLike;
+  /**
+   * The cockpit SPA. `private`, so never published, but it consumes the api-client and the
+   * service, and a bump that leaves its ranges on the previous version makes `npm ci` on the
+   * version-bump branch fail the same way an unstamped contract does.
+   */
+  web: ManifestLike;
   /** The unscoped bin alias, so `npx cezarion` works. */
   alias: ManifestLike;
 }
@@ -84,10 +106,11 @@ export function pinDependency(pkg: ManifestLike, depName: string, range: string)
 /**
  * Stamp every manifest to `version` and re-pin the intra-release dependencies.
  *
- * Two pins, both derived from the manifests rather than hardcoded:
+ * Pins, all derived from the manifests rather than hardcoded:
  *   - the alias → the service, so `npx <alias>@<v>` runs the matching CLI;
- *   - the service → the api-client, so a published service can never resolve a client build it
- *     was not released with.
+ *   - the service → the api-client (and the contract), so a published service can never resolve
+ *     a client build it was not released with;
+ *   - the cockpit → the api-client and the service, so a bump branch stays `npm ci`-able.
  *
  * The alias also inherits `repository`/`homepage`/`bugs` from the service manifest: we publish
  * with `--provenance`, and npm rejects (E422) any manifest whose `repository.url` does not
@@ -99,7 +122,7 @@ export function stampManifestSet(
   version: string,
   pin: PinStyle,
 ): ReleaseManifests {
-  const { contract, apiClient, cezar, alias } = manifests;
+  const { contract, apiClient, cezar, web, alias } = manifests;
   const range = pin(version);
 
   const inherited: Partial<ManifestLike> = {};
@@ -113,6 +136,11 @@ export function stampManifestSet(
     cezar: pinDependency(
       pinDependency({ ...cezar, version }, apiClient.name, range),
       contract.name,
+      range,
+    ),
+    web: pinDependency(
+      pinDependency({ ...web, version }, apiClient.name, range),
+      cezar.name,
       range,
     ),
     alias: {

@@ -58,6 +58,22 @@ async function makeFixture(): Promise<string> {
   );
   await writeFile(join(root, 'packages', 'cezar', 'index.js'), 'export {};\n');
 
+  await mkdir(join(root, 'packages', 'web'), { recursive: true });
+  await writeFile(
+    join(root, 'packages', 'web', 'package.json'),
+    `${JSON.stringify(
+      {
+        name: '@scope/fake-web',
+        version: '0.9.9',
+        private: true,
+        dependencies: { '@scope/fake-client': '^0.9.9' },
+        devDependencies: { '@scope/fake-root': '^0.9.9' },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
   await mkdir(join(root, 'alias-cezarion'));
   await writeFile(
     join(root, 'alias-cezarion', 'package.json'),
@@ -122,12 +138,16 @@ test('dry-run publish stamps every manifest, pins each sibling exact, and emits 
 
     const clientPkg = await readPkg(root, 'packages', 'api-client');
     const cezarPkg = await readPkg(root, 'packages', 'cezar');
+    const webPkg = await readPkg(root, 'packages', 'web');
     const aliasPkg = await readPkg(root, 'alias-cezarion');
     assert.equal(clientPkg.version, '0.9.9-pr77.5');
     assert.equal(cezarPkg.version, '0.9.9-pr77.5');
+    assert.equal(webPkg.version, '0.9.9-pr77.5');
     assert.equal(aliasPkg.version, '0.9.9-pr77.5');
     assert.deepEqual(aliasPkg.dependencies, { '@scope/fake-root': '0.9.9-pr77.5' });
     assert.deepEqual(cezarPkg.devDependencies, { '@scope/fake-client': '0.9.9-pr77.5' });
+    assert.deepEqual(webPkg.dependencies, { '@scope/fake-client': '0.9.9-pr77.5' });
+    assert.deepEqual(webPkg.devDependencies, { '@scope/fake-root': '0.9.9-pr77.5' });
     // The workspace root publishes nothing and must be left exactly as it was.
     assert.equal((await readPkg(root)).version, '0.0.0');
 

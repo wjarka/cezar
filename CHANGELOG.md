@@ -22,6 +22,14 @@
   is a 400, matching `POST /api/v1/runs`. Spec: `.ai/specs/2026-07-29-agent-profiles.md`.
 
 ## 🐛 Fixes
+- 🐛 **A version-bump commit is installable again.** The Release workflow stamped
+  api-client, cezar and the alias, then opened a bump PR that `npm ci` could not
+  install: `packages/contract` stayed on the previous version while its consumers
+  demanded `^<new>`, `packages/web`'s ranges went stale the same way, and
+  `package-lock.json` was never regenerated. The stamper now covers every
+  workspace, the bump commit restages those manifests plus a lockfile from
+  `npm install --package-lock-only --ignore-scripts`, and the GitHub Release
+  body lists only packages that were actually published. (#35)
 - 🐛 **Parallel OpenCode subtasks now each bind to their own child session.** The v2 mapper bound
   a child session to a subtask only while exactly one subtask was pending, so an agent that spawned
   two subtasks at once bound neither: every line the children produced was dropped as unattributed
