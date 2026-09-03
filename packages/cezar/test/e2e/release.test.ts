@@ -279,6 +279,84 @@ test('a token publish from Actions still passes --provenance', { timeout: 120_00
   }
 });
 
+test('a mid-set collision skips the already-published name and publishes the rest', { timeout: 120_000 }, async () => {
+  const root = await makeFixture('0.1.5');
+  try {
+    await writeFile(join(root, 'github-output.txt'), '');
+    const stub = join(root, 'npm-stub.mjs');
+    const log = join(root, 'npm-stub.log');
+    await writeFile(
+      stub,
+      `import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(process.env.NPM_STUB_LOG, \`\${process.cwd()} \${args.join(' ')}\\n\`);
+if (args[0] === 'view') {
+  const spec = args[1] ?? '';
+  if (spec === '@scope/fake-root@0.1.6') {
+    process.stdout.write('0.1.6\\n');
+    process.exit(0);
+  }
+  process.exit(1);
+}
+if (args[0] === 'publish' && process.cwd().includes('packages/cezar')) {
+  process.stderr.write('npm error code E403\\n');
+  process.exit(1);
+}
+`,
+    );
+    const { stdout } = await runScript(root, ['patch'], {
+      NODE_AUTH_TOKEN: 'npm_fake_token',
+      GITHUB_ACTIONS: 'true',
+      npm_execpath: stub,
+      NPM_STUB_LOG: log,
+    });
+    assert.match(stdout, /@scope\/fake-root@0\.1\.6 already on the registry — skipping/);
+    assert.match(stdout, /npm publish[^\n]*\(@scope\/fake-client\)/);
+    assert.match(stdout, /npm publish[^\n]*\(fake-alias\)/);
+    const output = await readFile(join(root, 'github-output.txt'), 'utf8');
+    assert.match(output, /^published=true$/m);
+    assert.match(output, /^publishedNames=@scope\/fake-client,@scope\/fake-root,fake-alias$/m);
+    const npmArgs = await readFile(log, 'utf8');
+    assert.match(npmArgs, /view @scope\/fake-root@0\.1\.6 version/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a publish failure that is not already on the registry still aborts', { timeout: 120_000 }, async () => {
+  const root = await makeFixture('0.1.5');
+  try {
+    await writeFile(join(root, 'github-output.txt'), '');
+    const stub = join(root, 'npm-stub.mjs');
+    const log = join(root, 'npm-stub.log');
+    await writeFile(
+      stub,
+      `import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(process.env.NPM_STUB_LOG, \`\${process.cwd()} \${args.join(' ')}\\n\`);
+if (args[0] === 'view') process.exit(1);
+if (args[0] === 'publish' && process.cwd().includes('alias-cezarion')) {
+  process.stderr.write('npm error code E404\\n');
+  process.stderr.write('404 Not Found - PUT https://registry.npmjs.org/fake-alias - Not found\\n');
+  process.exit(1);
+}
+`,
+    );
+    await assert.rejects(
+      runScript(root, ['patch'], {
+        NODE_AUTH_TOKEN: 'npm_fake_token',
+        GITHUB_ACTIONS: 'true',
+        npm_execpath: stub,
+        NPM_STUB_LOG: log,
+      }),
+    );
+    const output = await readFile(join(root, 'github-output.txt'), 'utf8');
+    assert.doesNotMatch(output, /^published=true$/m);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('an unknown bump exits non-zero without touching the manifests', { timeout: 60_000 }, async () => {
   const root = await makeFixture('0.1.5');
   try {
