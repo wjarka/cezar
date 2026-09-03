@@ -69,6 +69,33 @@ export function piTurnStarted(state: PiUiMapperState): PiUiMapping {
   };
 }
 
+/** Pi extensions may resume work after `agent_settled` without a new prompt or
+ * `turn_start`. Re-open the normalized turn before mapping that activity. */
+function mapActivity(
+  value: Record<string, unknown>,
+  state: PiUiMapperState,
+  map: (value: Record<string, unknown>, state: PiUiMapperState) => PiUiMapping,
+): PiUiMapping {
+  if (state.turnId) return map(value, state);
+  const started = piTurnStarted(state);
+  const mapped = map(value, started.state);
+  return { events: [...started.events, ...mapped.events], state: mapped.state };
+}
+
+function isMessageUpdateActivity(value: Record<string, unknown>): boolean {
+  const update = isRecord(value.assistantMessageEvent) ? value.assistantMessageEvent : undefined;
+  const type = update ? string(update.type) : undefined;
+  return type?.startsWith('text_') === true || type?.startsWith('thinking_') === true;
+}
+
+function isAssistantMessageEnd(value: Record<string, unknown>): boolean {
+  return isRecord(value.message) && string(value.message.role) === 'assistant';
+}
+
+function isToolStart(value: Record<string, unknown>): boolean {
+  return Boolean(string(value.toolCallId) && string(value.toolName));
+}
+
 export function mapPiRpcMessage(value: unknown, state: PiUiMapperState): PiUiMapping {
   if (!isRecord(value) || typeof value.type !== 'string') return { events: [], state };
 
@@ -94,11 +121,17 @@ export function mapPiRpcMessage(value: unknown, state: PiUiMapperState): PiUiMap
 
   switch (value.type) {
     case 'message_update':
-      return mapMessageUpdate(value, state);
+      return isMessageUpdateActivity(value)
+        ? mapActivity(value, state, mapMessageUpdate)
+        : mapMessageUpdate(value, state);
     case 'message_end':
-      return mapMessageEnd(value, state);
+      return isAssistantMessageEnd(value)
+        ? mapActivity(value, state, mapMessageEnd)
+        : mapMessageEnd(value, state);
     case 'tool_execution_start':
-      return mapToolStart(value, state);
+      return isToolStart(value)
+        ? mapActivity(value, state, mapToolStart)
+        : mapToolStart(value, state);
     case 'tool_execution_update':
       return mapToolUpdate(value, state);
     case 'tool_execution_end':

@@ -66,6 +66,21 @@ describe('pi RPC → v2 golden fixture', () => {
       { type: 'turn.completed', turnId: 'turn_1', stopReason: 'max_tokens' },
     ]);
   });
+
+  it.each([
+    { type: 'message_update', assistantMessageEvent: { type: 'future_update', contentIndex: 0 } },
+    { type: 'message_end', message: { role: 'user' } },
+    { type: 'tool_execution_start', toolCallId: '', toolName: 'edit', args: {} },
+  ])('does not synthesize a turn for invalid post-settlement activity: $type', (value) => {
+    let state = piTurnStarted(createPiUiState()).state;
+    state = mapPiRpcMessage({ type: 'agent_settled' }, state).state;
+
+    const mapped = mapPiRpcMessage(value, state);
+
+    expect(mapped.events).toEqual([]);
+    expect(mapped.state.turnId).toBeNull();
+    expect(mapped.state.turnSeq).toBe(1);
+  });
 });
 
 function feed(messages: unknown[]): UiEvent[] {

@@ -154,7 +154,7 @@ The Tasks UI does not change: durable sessions already display the violet “mon
 - **Cezar restarts.** Persisted monitoring activity is retained according to current run recovery, but this feature does not promise resurrection of a backend process that no longer exists. Recovery must never manufacture a live session.
 - **Backend disconnects while monitoring.** Use the existing session-end/failure path, clear accounting, and surface the terminal state; do not loop reconnects indefinitely.
 - **Agent forgets `CEZ:MONITORING`.** It becomes ordinary waiting and expires after 15 minutes, preserving backward compatibility.
-- **A monitored command or sub-agent finishes after the assistant turn ends.** Its late event does not reset or terminate the epoch. The session remains monitoring until an explicit follow-up/wake lets the agent interpret the result and finish its workflow.
+- **A monitored command or sub-agent finishes after the assistant turn ends.** Resulting turn, item, plan, or image activity exits monitoring, cancels the pending wake, and restores active-slot accounting before the agent continues. Passive diagnostics do not disarm a truly parked monitor. A later `CEZ:MONITORING` turn-end starts a new parked interval.
 - **Idle callback races marker handling.** Parking cancels any previous idle timer before publishing `running`/`monitoring`; the callback re-checks the current epoch/activity and cannot emit terminal success for a monitor.
 - **Agent emits `CEZ:ASK` and `CEZ:MONITORING`.** Existing precedence keeps ASK as genuine attention with the ordinary timeout.
 - **Memory guard trips.** Existing per-task memory enforcement remains authoritative. Durable does not mean immune to explicit resource safety controls.

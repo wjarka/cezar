@@ -75,6 +75,7 @@ describe('RunManager directional usage accounting', () => {
   });
 
   afterEach(() => {
+    manager.dispose();
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -267,6 +268,7 @@ describe('RunManager.recordTurnEnd', () => {
   });
 
   afterAll(() => {
+    manager.dispose();
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -1122,6 +1124,100 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
       .trim().split('\n').map((line) => JSON.parse(line) as { type: string; message?: string });
     expect(events.some((event) => event.type === 'note' && event.message?.includes('(1/40)'))).toBe(true);
     expect(events.some((event) => event.type === 'user-message')).toBe(false);
+  }, 30_000);
+
+  it.each([
+    { activity: 'tool', trigger: 'mock:backend-resume', eventNeedle: 'pi-autonomous-edit' },
+    { activity: 'message', trigger: 'mock:backend-resume-text', eventNeedle: 'Pi resumed without a prompt' },
+  ])('backend $activity activity resumes a parked monitor before its wake deadline (#59)', async ({ trigger, eventNeedle }) => {
+    manager.dispose();
+    const semaphore = new WorkspaceSemaphore({ initial: { monitoringWakeIntervalMinutes: 0.02 } });
+    manager = new RunManager(store, repoRoot, { semaphore });
+    const record = manager.startRun(SINGLE_STEP, {
+      task: `mock:monitoring ${trigger} keep going`,
+      runner: 'pi',
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.activity === 'monitoring' && Boolean(r.monitoringWakeAt));
+
+    const internals = manager as unknown as {
+      active: Map<string, Record<string, unknown>>;
+      waiting: Set<string>;
+      monitoring: Set<string>;
+      busySlots(): number;
+    };
+    const state = internals.active.get(record.id);
+    if (!state) throw new Error('active run state missing');
+    const originalDeadline = Date.parse(String(store.getRun(record.id)?.monitoringWakeAt));
+    expect(internals.waiting.has(record.id)).toBe(true);
+    expect(internals.monitoring.has(record.id)).toBe(true);
+    expect(internals.busySlots()).toBe(0);
+    expect(semaphore.busy()).toBe(0);
+
+    await waitFor(record.id, () => {
+      const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+      return events.includes(eventNeedle);
+    }, 3_000);
+
+    expect(store.getRun(record.id)).toMatchObject({ status: 'running', activity: undefined });
+    expect(store.getRun(record.id)?.monitoringWakeAt).toBeUndefined();
+    expect(state.monitoringWakeTimer).toBeUndefined();
+    expect(internals.waiting.has(record.id)).toBe(false);
+    expect(internals.monitoring.has(record.id)).toBe(false);
+    expect(internals.busySlots()).toBe(1);
+    expect(semaphore.busy()).toBe(1);
+    expect((state.session as { open?: boolean } | undefined)?.open).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, originalDeadline - Date.now() + 100)));
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line) as { type: string; message?: string; item?: { id?: string } });
+    expect(events.some((event) => JSON.stringify(event).includes(eventNeedle))).toBe(true);
+    expect(events.some((event) => event.type === 'note' && event.message?.includes('automatic monitoring wake-up'))).toBe(false);
+    expect((state.session as { open?: boolean } | undefined)?.open).toBe(true);
+  }, 30_000);
+
+  it('a passive backend diagnostic keeps a parked monitor wakeable', async () => {
+    manager.dispose();
+    const semaphore = new WorkspaceSemaphore({ initial: { monitoringWakeIntervalMinutes: 0.01 } });
+    manager = new RunManager(store, repoRoot, { semaphore });
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:monitoring keep going', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.activity === 'monitoring' && Boolean(r.monitoringWakeAt));
+
+    const internals = manager as unknown as {
+      active: Map<string, Record<string, unknown>>;
+      waiting: Set<string>;
+      monitoring: Set<string>;
+      busySlots(): number;
+      makeUiSink(runId: string, stepId: string): { handle(event: UiEvent): void };
+      handleRunnerUiEvent(
+        runId: string,
+        state: Record<string, unknown>,
+        sink: { handle(event: UiEvent): void },
+        event: UiEvent,
+      ): void;
+    };
+    const state = internals.active.get(record.id);
+    if (!state) throw new Error('active run state missing');
+    const wakeTimer = state.monitoringWakeTimer;
+    internals.handleRunnerUiEvent(
+      record.id,
+      state,
+      internals.makeUiSink(record.id, 'task'),
+      { type: 'session.error', message: 'late non-fatal diagnostic', fatal: false },
+    );
+
+    expect(store.getRun(record.id)?.activity).toBe('monitoring');
+    expect(state.monitoringWakeTimer).toBe(wakeTimer);
+    expect(internals.waiting.has(record.id)).toBe(true);
+    expect(internals.monitoring.has(record.id)).toBe(true);
+    expect(internals.busySlots()).toBe(0);
+    expect(semaphore.busy()).toBe(0);
+    await waitFor(record.id, () => {
+      const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+      return events.includes('automatic monitoring wake-up (1/40)');
+    });
   }, 30_000);
 
   it('a markerless turn-end still parks as waiting with no activity', async () => {

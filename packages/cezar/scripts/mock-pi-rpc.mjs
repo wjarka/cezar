@@ -25,6 +25,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       },
     });
   } else if (command.type === 'prompt') {
+    const monitoringMarker = command.message.includes('mock:monitoring') ? '\n\nCEZ:MONITORING' : '';
+    const responseText = `Investigating: ${command.message}${monitoringMarker}`;
     send({ type: 'response', command: 'prompt', success: true });
     send({ type: 'agent_start' });
     send({ type: 'turn_start' });
@@ -39,7 +41,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       assistantMessageEvent: {
         type: 'text_delta',
         contentIndex: 0,
-        delta: `Investigating: ${command.message}`,
+        delta: responseText,
         partial: {},
       },
     });
@@ -49,7 +51,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       assistantMessageEvent: {
         type: 'text_end',
         contentIndex: 0,
-        content: `Investigating: ${command.message}`,
+        content: responseText,
         partial: {},
       },
     });
@@ -77,6 +79,51 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     send({ type: 'turn_end', message: {}, toolResults: [] });
     send({ type: 'agent_end', messages: [], willRetry: false });
     send({ type: 'agent_settled' });
+    if (command.message.includes('mock:backend-resume-text')) {
+      setTimeout(() => {
+        send({
+          type: 'message_update',
+          message: {},
+          assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} },
+        });
+        send({
+          type: 'message_update',
+          message: {},
+          assistantMessageEvent: {
+            type: 'text_delta',
+            contentIndex: 0,
+            delta: 'Pi resumed without a prompt',
+            partial: {},
+          },
+        });
+        send({
+          type: 'message_update',
+          message: {},
+          assistantMessageEvent: {
+            type: 'text_end',
+            contentIndex: 0,
+            content: 'Pi resumed without a prompt',
+            partial: {},
+          },
+        });
+      }, 250);
+    } else if (command.message.includes('mock:backend-resume')) {
+      setTimeout(() => {
+        send({
+          type: 'tool_execution_start',
+          toolCallId: 'pi-autonomous-edit',
+          toolName: 'edit',
+          args: { path: 'src/a.ts', oldText: 'old', newText: 'new' },
+        });
+        send({
+          type: 'tool_execution_end',
+          toolCallId: 'pi-autonomous-edit',
+          toolName: 'edit',
+          result: { content: [{ type: 'text', text: 'updated' }] },
+          isError: false,
+        });
+      }, 250);
+    }
   } else if (command.type === 'abort') {
     send({ type: 'response', command: 'abort', success: true });
   }
