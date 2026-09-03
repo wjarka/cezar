@@ -380,6 +380,30 @@ async function respond(userText, imageCount) {
     return;
   }
 
+  // `mock:schedule-wakeup` → Claude's native park tool, without also emitting
+  // CEZ:MONITORING. The workflow engine must recognize the completed turn's
+  // tool use rather than depending on the textual agent contract marker (#46).
+  if (userText.includes('mock:schedule-wakeup')) {
+    const id = `toolu_schedule_wakeup_${turn}`;
+    emit({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id, name: 'ScheduleWakeup', input: { delay: '5m' } }],
+        usage: { input_tokens: 40, output_tokens: 20 },
+      },
+    });
+    await sleep(100);
+    emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'Wakeup scheduled.' }],
+      },
+    });
+    await sleep(100);
+  }
+
   if (turn === 1) {
     // Leave a visible trace in the cwd (the task worktree under spec 006) so
     // the Diff view has something real to show in dry runs. Exactly one line

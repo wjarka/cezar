@@ -963,6 +963,73 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     expect(state?.idleTimer).toBeUndefined(); // durable monitors do not inherit the 15-minute user-wait timer
   }, 30_000);
 
+  it('a Claude ScheduleWakeup turn-end parks as monitoring without a text marker', async () => {
+    const record = manager.startRun(SINGLE_STEP, {
+      task: 'mock:schedule-wakeup keep going',
+      runner: 'claude',
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting' || r?.activity === 'monitoring');
+
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events).toContain('"tool":"ScheduleWakeup"');
+    expect(events).not.toContain('CEZ:MONITORING');
+    expect(store.getRun(record.id)).toMatchObject({ status: 'running', activity: 'monitoring' });
+    const state = (manager as unknown as {
+      active: Map<string, { idleTimer?: NodeJS.Timeout; monitoringWakeTimer?: NodeJS.Timeout }>;
+    }).active.get(record.id);
+    expect(state?.idleTimer).toBeUndefined();
+    expect(state?.monitoringWakeTimer).toBeDefined();
+
+    expect(manager.sendMessage(record.id, [{ type: 'text', text: 'the next turn is a plain wait' }])).toBe(true);
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    expect(store.getRun(record.id)?.activity).toBeUndefined();
+    expect(state?.idleTimer).toBeDefined();
+    expect(state?.monitoringWakeTimer).toBeUndefined();
+  }, 30_000);
+
+  it('recognizes Claude ScheduleWakeup on a reopened continuation too', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'finish the first turn', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    expect(manager.finish(record.id)).toBe(true);
+    await waitFor(record.id, (r) => r?.status === 'done' || r?.status === 'review');
+
+    expect(manager.continueRun(record.id, { text: 'mock:schedule-wakeup check later' })).toEqual({ ok: true });
+    await waitFor(record.id, (r) => r?.status === 'waiting' || r?.activity === 'monitoring');
+    expect(store.getRun(record.id)).toMatchObject({ status: 'running', activity: 'monitoring' });
+    const state = (manager as unknown as {
+      active: Map<string, { idleTimer?: NodeJS.Timeout; monitoringWakeTimer?: NodeJS.Timeout }>;
+    }).active.get(record.id);
+    expect(state?.idleTimer).toBeUndefined();
+    expect(state?.monitoringWakeTimer).toBeDefined();
+  }, 40_000);
+
+  it('keeps CEZ:DONE ahead of Claude ScheduleWakeup', async () => {
+    const record = manager.startRun(SINGLE_STEP, {
+      task: 'mock:schedule-wakeup mock:done finish now',
+      runner: 'claude',
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'done' || r?.status === 'review');
+    expect(store.getRun(record.id)?.activity).toBeUndefined();
+  }, 30_000);
+
+  it('keeps CEZ:ASK ahead of Claude ScheduleWakeup', async () => {
+    const record = manager.startRun(SINGLE_STEP, {
+      task: 'mock:schedule-wakeup mock:ask choose',
+      runner: 'claude',
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    expect(store.getRun(record.id)?.activity).toBeUndefined();
+    const state = (manager as unknown as { active: Map<string, { idleTimer?: NodeJS.Timeout }> }).active.get(record.id);
+    expect(state?.idleTimer).toBeDefined();
+  }, 30_000);
+
   /**
    * #810 — the regression the two 0.9.2 reports describe. #661 removed the 15-minute
    * idle timer from the monitoring branch and replaced it with a wake timer that
@@ -1025,6 +1092,11 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     currentId = record.id;
     await waitFor(record.id, (r) => r?.status === 'waiting');
     expect(store.getRun(record.id)?.activity).toBeUndefined();
+    const state = (manager as unknown as {
+      active: Map<string, { idleTimer?: NodeJS.Timeout; monitoringWakeTimer?: NodeJS.Timeout }>;
+    }).active.get(record.id);
+    expect(state?.idleTimer).toBeDefined(); // genuine user waits still expire after IDLE_TIMEOUT_MS
+    expect(state?.monitoringWakeTimer).toBeUndefined();
   }, 30_000);
 
   it('strips the CEZ:MONITORING marker from server-emitted v1 text events', async () => {

@@ -92,6 +92,13 @@ const DONE_MARKER_RE = /CEZ:DONE\s*$/;
  * backends can't split the marker across text events.
  */
 const MONITORING_MARKER_RE = /CEZ:MONITORING\s*$/;
+/** Claude's native scheduler is the backend-level equivalent of the textual
+ * monitoring marker. Keep this recognition here, at the workflow boundary,
+ * so the v1 event protocol stays unchanged and other backends do not acquire
+ * semantics from a coincidentally named tool (#46). */
+function isClaudeScheduleWakeup(event: AgentEvent, backend: RunnerId): boolean {
+  return backend === 'claude' && event.type === 'tool-call' && event.tool === 'ScheduleWakeup';
+}
 /**
  * Preserve boundaries between complete assistant text blocks while a turn is
  * accumulated for marker parsing. The runners join these same v1 blocks with
@@ -2220,6 +2227,7 @@ export class RunManager {
 
     let stepCost = 0;
     let turnText = '';
+    let sawClaudeScheduleWakeup = false;
     let sessionError: string | undefined;
     const sink = this.makeUiSink(runId, stepId);
     const onEvent = (event: AgentEvent) => {
@@ -2251,6 +2259,7 @@ export class RunManager {
         stepCost += event.usd;
         this.store.updateStep(runId, stepId, { costUsd: stepCost });
       }
+      if (isClaudeScheduleWakeup(event, backend)) sawClaudeScheduleWakeup = true;
       if (event.type === 'turn-end') {
         // Belt-and-braces: v2 `turn.completed` already flushed the delta
         // coalescers; the v1 turn boundary flushes again (idempotent) so no
@@ -2265,8 +2274,12 @@ export class RunManager {
         const ask = askResult?.kind === 'valid' ? askResult.request : null;
         const askRejection = askResult ? askMarkerRejection(askResult) : undefined;
         const monitoring =
-          sessionOpen && !done && !ask && MONITORING_MARKER_RE.test(turnText.trimEnd());
+          sessionOpen &&
+          !done &&
+          !ask &&
+          (MONITORING_MARKER_RE.test(turnText.trimEnd()) || sawClaudeScheduleWakeup);
         turnText = '';
+        sawClaudeScheduleWakeup = false;
         if (askRejection) this.store.appendEvent(runId, { type: 'note', message: askRejection, stepId });
         if (done) {
           // Goal achieved (agent contract, #347) — same as in runAgentStep.
@@ -2294,10 +2307,10 @@ export class RunManager {
             })();
           if (!autoContinued) {
             // `CEZ:ASK` → park `waiting` (attention) AND surface the structured
-            // question as an ask card (#473). `CEZ:MONITORING` → non-attention
-            // `running`/`activity:'monitoring'` (#490). Both share the waiting
-            // lifecycle (free the slot, keep the idle timer); the autonomous
-            // nudge above still wins over either.
+            // question as an ask card (#473). `CEZ:MONITORING` or Claude's native
+            // `ScheduleWakeup` → non-attention `running`/`activity:'monitoring'`
+            // (#490, #46). Both free the slot; only genuine user waits keep the
+            // idle timer. The autonomous nudge above still wins over either.
             if (ask) emitAskRequested(sink, ask);
             if (monitoring) {
               this.store.updateRun(runId, { status: 'running', activity: 'monitoring' });
@@ -2866,6 +2879,7 @@ export class RunManager {
     const startTokens = stepRecord?.tokensUsed ?? 0;
     let stepCost = stepRecord?.costUsd ?? 0;
     let turnText = '';
+    let sawClaudeScheduleWakeup = false;
     let sessionError: string | undefined;
     const sink = this.makeUiSink(runId, step.id);
     const onEvent = (event: AgentEvent) => {
@@ -2898,6 +2912,7 @@ export class RunManager {
         stepCost += event.usd;
         this.store.updateStep(runId, step.id, { costUsd: stepCost });
       }
+      if (isClaudeScheduleWakeup(event, backend)) sawClaudeScheduleWakeup = true;
       if (event.type === 'turn-end') {
         // v2 `turn.completed` already flushed the coalescers; the v1 turn
         // boundary flushes again (idempotent) as a backstop.
@@ -2915,8 +2930,9 @@ export class RunManager {
           sessionOpen &&
           !done &&
           !ask &&
-          MONITORING_MARKER_RE.test(turnText.trimEnd());
+          (MONITORING_MARKER_RE.test(turnText.trimEnd()) || sawClaudeScheduleWakeup);
         turnText = '';
+        sawClaudeScheduleWakeup = false;
         if (askRejection) emit({ type: 'note', stepId: step.id, message: askRejection });
         if (done) {
           // Goal achieved (agent contract, #347): close the session instead
@@ -2931,10 +2947,9 @@ export class RunManager {
           // Turn over, session open. Either the ball is in the user's court
           // (`waiting`) — optionally with a structured `CEZ:ASK` question the
           // cockpit renders as an ask card (#473) — or the agent declared it is
-          // still working on its own downstream work with `CEZ:MONITORING`, which
-          // parks as `running`/`activity:'monitoring'`, a non-attention state,
-          // instead of raising "needs you" (#490). Lifecycle is identical: the
-          // run frees its slot and keeps the idle timer.
+          // still working through `CEZ:MONITORING` or Claude's native
+          // `ScheduleWakeup`. Monitoring parks as `running` with no user-wait
+          // idle timer, so the cockpit stays non-attention (#490, #46).
           if (ask) emitAskRequested(sink, ask);
           if (monitoring) {
             this.store.updateRun(runId, { status: 'running', activity: 'monitoring' });
