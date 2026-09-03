@@ -1113,6 +1113,18 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     expect(events).not.toContain('continuing without pausing');
   }, 30_000);
 
+  it('a Markdown-wrapped user question still parks as waiting', async () => {
+    const record = manager.startRun(SINGLE_STEP, {
+      task: 'mock:question-markdown choose an approach',
+      worktree: false,
+    });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+
+    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    expect(events).not.toContain('continuing without pausing');
+  }, 30_000);
+
   it('an autonomous first turn still honors CEZ:ASK', async () => {
     const record = manager.startRun(SINGLE_STEP, {
       task: 'mock:ask choose an approach',

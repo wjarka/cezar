@@ -219,7 +219,7 @@ function hasUserQuestion(text: string): boolean {
   while (lines.length > 0) {
     const line = lines.pop()!.trim();
     if (!line || /^(?:[-*+]|\d+[.)])\s+\S/.test(line)) continue;
-    return /\?(?:\s*\([^()]*\))?$/.test(line);
+    return /\?[*_~`]*(?:\s*\([^()]*\))?$/.test(line);
   }
   return false;
 }

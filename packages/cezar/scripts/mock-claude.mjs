@@ -83,6 +83,7 @@ async function respond(userText, imageCount) {
   const rhetoricalMidWork = userText.includes('mock:rhetorical-mid-work');
   const midWork = rhetoricalMidWork || userText.includes('mock:mid-work');
   const questionOptions = userText.includes('mock:question-options');
+  const questionMarkdown = userText.includes('mock:question-markdown');
   // `mock:done` anywhere in the message → the reply ends with the CEZ:DONE
   // completion marker (#347), so the auto-close path is testable dry.
   const doneMarker = userText.includes('mock:done') ? '\n\nCEZ:DONE' : '';
@@ -499,7 +500,7 @@ async function respond(userText, imageCount) {
       type: 'assistant',
       message: {
         role: 'assistant',
-        content: [{ type: 'text', text: `${questionOptions ? 'Which implementation should I use?\n\n- Minimal\n- Expanded' : rhetoricalMidWork ? 'Why did the test fail? I found the cause and will implement the fix.' : midWork ? "I'll write failing tests first, then implement the fix." : 'Done with the first pass — opened a draft PR: https://github.com/open-mercato/demo/pull/123. Anything to adjust? (dry-run mock)'}${refsMarkers}${doneMarker}${monitoringMarker}${askMarker}` }],
+        content: [{ type: 'text', text: `${questionOptions ? 'Which implementation should I use?\n\n- Minimal\n- Expanded' : questionMarkdown ? '**Should I use the minimal implementation?**' : rhetoricalMidWork ? 'Why did the test fail? I found the cause and will implement the fix.' : midWork ? "I'll write failing tests first, then implement the fix." : 'Done with the first pass — opened a draft PR: https://github.com/open-mercato/demo/pull/123. Anything to adjust? (dry-run mock)'}${refsMarkers}${doneMarker}${monitoringMarker}${askMarker}` }],
         usage: { input_tokens: 300, output_tokens: 90 },
       },
     });
