@@ -14,7 +14,7 @@ import { prependSystemPrompt, trackChildExit } from './agent-runner.ts';
 import { buildChildEnv } from './agent-env.ts';
 import { parseAskRequest, type AskQuestion } from './ask.ts';
 import { AUTO_END_DELAY_MS, DEFAULT_RUN_TIMEOUT_MS } from './claude-cli-runner.ts';
-import { parseModelIdentity } from './model-identity.ts';
+import { formatModelIdentity, parseModelIdentity } from './model-identity.ts';
 import { V1TextCoalescer } from './v1-text-coalescer.ts';
 import {
   createOpencodeUiState,
@@ -552,6 +552,20 @@ class OpencodeSession implements AgentSession {
     this.handleEvent(evt);
   }
 
+  /** #53 — a forwarded session error must never read like a missing
+   *  executable: a bare upstream `Not Found` used to surface as
+   *  `opencode: Not Found`, indistinguishable from the spawn failure whose
+   *  PATH/installation guidance lives in `wrapSpawnError`. Name the selected
+   *  provider/model — only the runner knows it — and keep any structured
+   *  upstream status or code, so a provider outage is recognizable as one. */
+  private sessionErrorMessage(error: unknown): string {
+    const id = parseModelIdentity(this.spec.model);
+    const context = id ? `provider ${formatModelIdentity(id)}` : 'provider';
+    const detail = sessionErrorDetail(error);
+    const suffix = detail ? ` (${detail})` : '';
+    return `opencode: ${context} request failed: ${sessionErrorText(error)}${suffix}`;
+  }
+
   private handleEvent(evt: OpencodeEvent): void {
     const type = evt.type ?? '';
     const props = evt.properties ?? {};
@@ -577,7 +591,7 @@ class OpencodeSession implements AgentSession {
       // follows still closes the turn.
       const sid = stringField(props, 'sessionID');
       if (sid === undefined || sid === this.sessionId) {
-        this.emit({ type: 'error', message: `opencode: ${sessionErrorText(props.error)}` });
+        this.emit({ type: 'error', message: this.sessionErrorMessage(props.error) });
       }
     }
   }
@@ -909,6 +923,26 @@ function sessionErrorText(error: unknown): string {
     stringField(rec, 'name') ??
     'session error'
   );
+}
+
+/** Structured upstream status or code, when the wire error carries one —
+ *  the AI SDK's `AI_APICallError` exposes a numeric `statusCode`, and some
+ *  providers nest a `code` inside `data`. Status wins over code; anything
+ *  else adds nothing (#53). */
+function sessionErrorDetail(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const rec = error as Record<string, unknown>;
+  const data = isRecord(rec.data) ? rec.data : undefined;
+  const status =
+    numField(rec, 'statusCode') ||
+    numField(rec, 'status') ||
+    (data ? numField(data, 'statusCode') : 0) ||
+    (data ? numField(data, 'status') : 0);
+  if (status > 0) return `HTTP ${status}`;
+  const rawCode = rec.code ?? (data ? data.code : undefined);
+  if (typeof rawCode === 'string' && rawCode.trim()) return `code ${rawCode.trim()}`;
+  if (typeof rawCode === 'number') return `code ${rawCode}`;
+  return undefined;
 }
 
 function numField(obj: Record<string, unknown>, key: string): number {
