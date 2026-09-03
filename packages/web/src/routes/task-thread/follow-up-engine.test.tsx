@@ -194,6 +194,31 @@ describe('follow-up ContinueAction runner/model selection (#401)', () => {
     expect(continueBody()).toEqual({})
   })
 
+  it('drops a previous run\'s effort pick when the thread switches runs (#45)', async () => {
+    serve()
+    const client = createQueryClient()
+    const tree = (run: ApiRun) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <Harness run={run} />
+          <Toaster />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const view = render(tree(makeRun({ id: 'run-a', effort: 'high' })))
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Effort' }))
+    const options = await screen.findAllByRole('menuitemradio')
+    fireEvent.click(options.find((option) => option.textContent?.includes('xhigh')) as HTMLElement)
+    expect(screen.getByRole('button', { name: 'Effort' }).textContent).toContain('xhigh')
+
+    view.rerender(tree(makeRun({ id: 'run-b', effort: 'low' })))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Effort' }).textContent).toContain('low'))
+    requests = requests.filter((r) => !r.url.endsWith('/continue'))
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await waitFor(() => expect(continueBody()).toBeDefined())
+    expect(continueBody()).toEqual({})
+  })
+
   it('sends a touched effort override through to /continue (#45)', async () => {
     serve()
     renderAction(makeRun({ effort: 'medium' }))
