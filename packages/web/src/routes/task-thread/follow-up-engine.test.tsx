@@ -86,6 +86,12 @@ function serve(
   modelsLocked = false,
   /** Agent accounts (spec 2026-07-29-agent-profiles); omitted answers the zero-config host. */
   agentProfiles?: AgentProfilesResponse,
+  modelCatalog: unknown = {
+    runner: 'codex',
+    models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }],
+    source: 'live',
+    stale: false,
+  },
 ) {
   requests = []
   const json = (payload: unknown, status = 200) =>
@@ -99,7 +105,7 @@ function serve(
       requests.push({ method, url, body })
       if (url === '/api/v1/health') return json(health)
       if (url === '/api/v1/providers/status') return json(providerStatus, providerStatusCode)
-      if (url === '/api/v1/models?runner=codex') return json({ runner: 'codex', models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }], source: 'live', stale: false })
+      if (url === '/api/v1/models?runner=codex') return json(modelCatalog)
       if (url === '/api/v1/config' && method === 'GET')
         return json({
           baseBranch: null,
@@ -217,6 +223,46 @@ describe('follow-up ContinueAction runner/model selection (#401)', () => {
     fireEvent.click(screen.getByRole('button', { name: /continue/i }))
     await waitFor(() => expect(continueBody()).toBeDefined())
     expect(continueBody()).toEqual({})
+  })
+
+  it('clears an inherited effort when a model change makes it unsupported', async () => {
+    serve(
+      HEALTH_MULTI,
+      {},
+      providersForHealth(HEALTH_MULTI),
+      200,
+      false,
+      undefined,
+      {
+        runner: 'codex',
+        models: [
+          { id: 'gpt-wide', label: 'gpt-wide', description: '', effortLevels: ['high', 'xhigh'] },
+          { id: 'gpt-lean', label: 'gpt-lean', description: '', effortLevels: ['low'] },
+        ],
+        source: 'live',
+        stale: false,
+      },
+    )
+    renderAction(makeRun({ runner: 'codex', model: 'gpt-wide', effort: 'xhigh' }))
+
+    const effort = await screen.findByRole('button', { name: 'Effort' })
+    fireEvent.pointerDown(effort)
+    let options: HTMLElement[] = []
+    await waitFor(() => {
+      options = screen.getAllByRole('menuitemradio')
+      expect(options).toHaveLength(3)
+    })
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0))
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Model' }))
+    options = await screen.findAllByRole('menuitemradio')
+    fireEvent.click(options.find((option) => option.textContent?.includes('gpt-lean')) as HTMLElement)
+    await waitFor(() => expect(effort.textContent).toContain('auto'))
+
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }))
+    await waitFor(() => expect(continueBody()).toBeDefined())
+    expect(continueBody()).toEqual({ model: 'gpt-lean', effort: '' })
   })
 
   it('sends a touched effort override through to /continue (#45)', async () => {

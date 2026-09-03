@@ -218,6 +218,7 @@ function serve(overrides: {
   /** Host authentication state, or a delayed answer for pending/refresh tests. */
   providerStatus?: ProviderStatusResponse | (() => Promise<Response>)
   providerStatusStatus?: number
+  models?: unknown
   skills?: Skill[]
   workflows?: WorkflowsResponse
   repo?: RepoResponse
@@ -243,6 +244,12 @@ function serve(overrides: {
     workspaceConfig: WORKSPACE_CONFIG,
     providerStatus: PROVIDERS_CONNECTED,
     providerStatusStatus: 200,
+    models: {
+      runner: 'codex',
+      models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }],
+      source: 'live',
+      stale: false,
+    },
     skills: SKILLS,
     workflows: WORKFLOWS,
     repo: REPO,
@@ -274,7 +281,7 @@ function serve(overrides: {
           ? data.providerStatus()
           : json(data.providerStatus, data.providerStatusStatus)
       }
-      if (url === '/api/v1/models?runner=codex') return json({ runner: 'codex', models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }], source: 'live', stale: false })
+      if (url === '/api/v1/models?runner=codex') return json(data.models)
       if (url === '/api/v1/skills') return json(data.skills)
       if (url === '/api/v1/workflows' && method === 'GET') return json(data.workflows)
       if (url === '/api/v1/workflows' && method === 'POST') {
@@ -395,6 +402,58 @@ describe('picker data flows', () => {
     expect(document.querySelector('[data-slot="runner-pill"]')).toBeNull()
     expect(document.querySelector('[data-slot="model-pill"]')).not.toBeNull()
     expect(document.querySelector('[data-slot="effort-pill"]')).not.toBeNull()
+  })
+
+  it('filters effort by model and resets an unsupported pick before submission', async () => {
+    serve({
+      health: HEALTH_MULTI,
+      providerStatus: PROVIDERS_MULTI,
+      models: {
+        runner: 'codex',
+        models: [
+          { id: 'gpt-wide', label: 'gpt-wide', description: '', effortLevels: ['high', 'xhigh'] },
+          { id: 'gpt-lean', label: 'gpt-lean', description: '', effortLevels: ['low'] },
+        ],
+        source: 'live',
+        stale: false,
+      },
+    })
+    renderNewTask()
+    await pillReady()
+
+    const runner = document.querySelector('[data-slot="runner-pill"]') as HTMLElement
+    fireEvent.pointerDown(runner)
+    let options = await screen.findAllByRole('menuitemradio')
+    fireEvent.click(options.find((option) => option.textContent?.includes('codex')) as HTMLElement)
+    await waitFor(() => expect(runner.textContent).toContain('codex'))
+
+    const model = document.querySelector('[data-slot="model-pill"]') as HTMLElement
+    fireEvent.pointerDown(model)
+    let modelOption: HTMLElement | undefined
+    await waitFor(() => {
+      modelOption = screen.getAllByRole('menuitemradio')
+        .find((option) => option.textContent?.includes('gpt-wide'))
+      expect(modelOption).toBeDefined()
+    })
+    fireEvent.click(modelOption as HTMLElement)
+
+    const effort = screen.getByRole('button', { name: 'Effort' })
+    fireEvent.pointerDown(effort)
+    options = await screen.findAllByRole('menuitemradio')
+    expect(options).toHaveLength(3)
+    expect(options.some((option) => option.textContent?.includes('low'))).toBe(false)
+    fireEvent.click(options.find((option) => option.textContent?.includes('xhigh')) as HTMLElement)
+    expect(effort.textContent).toContain('xhigh')
+
+    fireEvent.pointerDown(model)
+    options = await screen.findAllByRole('menuitemradio')
+    fireEvent.click(options.find((option) => option.textContent?.includes('gpt-lean')) as HTMLElement)
+    await waitFor(() => expect(effort.textContent).toContain('auto'))
+
+    fireEvent.change(textarea(), { target: { value: 'use supported effort only' } })
+    await startTask()
+    expect(postedBody()).toMatchObject({ runner: 'codex', model: 'gpt-lean' })
+    expect((postedBody() as { effort?: string }).effort).toBeUndefined()
   })
 
   it('shows the runner pill with >1 backend, and switching runner swaps the model presets', async () => {

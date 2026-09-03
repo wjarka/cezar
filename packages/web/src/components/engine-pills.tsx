@@ -4,9 +4,10 @@ import type { CreateRunInput, Runner } from '@open-mercato/cezar-api-client'
 import { PickerPill, RunnerPill, type RunnerAccountChoice } from '@/components/picker-pill'
 import { usableRunners } from '@/lib/provider-status'
 import {
-  EFFORT_OPTIONS,
+  effortOptionsForModel,
   modelsForRunner,
   modelCatalogStatus,
+  resolveEffort,
   resolveModel,
   resolveRunner,
   runnerOverride,
@@ -51,6 +52,8 @@ export interface ResolvedEngine {
   model: string
   /** Canonical effort or `''` for auto. */
   effort: string
+  /** `auto` plus the selected model's supported levels, or the compatibility fallback. */
+  effortOptions: ReturnType<typeof effortOptionsForModel>
   /** The backends this host offers — the runner pill renders only when there is a choice. */
   runners: readonly Runner[]
   /** What the active project's server context would pick from its authoritative config. */
@@ -89,11 +92,19 @@ export function useResolvedEngine(pick: EnginePick): ResolvedEngine {
   const account = accounts.some((choice) => choice.provider === runner && choice.id === pick.account)
     ? pick.account
     : null
+  const model = resolveModel(
+    modelsLocked ? null : pick.model,
+    runner,
+    config.data?.defaultModels,
+    catalog.data,
+  )
+  const effortOptions = effortOptionsForModel(runner, model, catalog.data)
   return {
     runner,
     runnerExplicit: pick.runner !== null,
-    model: resolveModel(modelsLocked ? null : pick.model, runner, config.data?.defaultModels, catalog.data),
-    effort: modelsLocked ? '' : (pick.effort ?? ''),
+    model,
+    effort: modelsLocked ? '' : resolveEffort(pick.effort, effortOptions),
+    effortOptions,
     runners,
     defaultRunner,
     canRun: providers.isSuccess && runners.length > 0,
@@ -172,7 +183,7 @@ export function EnginePills({
   accounts?: boolean
 }) {
   const resolved = useResolvedEngine(pick)
-  const { runner, model, effort, runners, canRun, modelsLocked } = resolved
+  const { runner, model, effort, effortOptions, runners, canRun, modelsLocked } = resolved
   const config = useConfig()
   const catalog = useRunnerModels(runner)
   const models = modelsForRunner(runner, catalog.data, [pick.model, config.data?.defaultModels?.[runner]])
@@ -217,20 +228,27 @@ export function EnginePills({
         disabled={unavailable}
         readOnly={modelsLocked === true}
         disabledHint={modelsLocked ? 'Model selection is locked to native coding-agent settings.' : undefined}
-        onPick={(next) => onChange({ ...pick, model: next })}
+        onPick={(next) => {
+          const nextOptions = effortOptionsForModel(runner, next, catalog.data)
+          onChange({
+            ...pick,
+            model: next,
+            effort: pick.effort === null ? null : resolveEffort(pick.effort, nextOptions),
+          })
+        }}
         options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
         status={modelCatalogStatus(runner, catalog.data, catalog.isError)}
       />
       <PickerPill
         slot="effort-pill"
         ariaLabel="Effort"
-        label={EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'auto'}
+        label={effortOptions.find((option) => option.value === effort)?.label ?? 'auto'}
         value={effort}
         disabled={unavailable}
         readOnly={modelsLocked === true}
         disabledHint={modelsLocked ? 'Effort selection is locked to native coding-agent settings.' : undefined}
         onPick={(next) => onChange({ ...pick, effort: next })}
-        options={EFFORT_OPTIONS.map((option) => ({ value: option.value, label: option.label, desc: option.desc }))}
+        options={effortOptions.map((option) => ({ value: option.value, label: option.label, desc: option.desc }))}
       />
     </>
   )
