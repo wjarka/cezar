@@ -61,9 +61,20 @@ function discover(
   script: (fake: ReturnType<typeof fakeChild>) => void,
   options: { timeoutMs?: number } = {},
 ): Promise<Array<{ id: string; label: string; description: string }>> {
-  const fake = fakeChild();
-  const promise = discoverOpencodeModels({ cwd: '/repo', spawn: () => fake.child, ...options });
-  queueMicrotask(() => script(fake));
+  const primary = fakeChild();
+  let calls = 0;
+  const promise = discoverOpencodeModels({
+    cwd: '/repo',
+    spawn: () => {
+      calls += 1;
+      if (calls === 1) return primary.child;
+      const fallback = fakeChild();
+      queueMicrotask(() => fallback.close(1));
+      return fallback.child;
+    },
+    ...options,
+  });
+  queueMicrotask(() => script(primary));
   return promise;
 }
 
@@ -118,6 +129,32 @@ describe('discoverOpencodeModels', () => {
         effortLevels: ['low', 'high', 'max'],
       },
     ]);
+  });
+
+  it('retries the plain model list when an older CLI rejects --verbose', async () => {
+    const verbose = fakeChild();
+    const plain = fakeChild();
+    const spawned: string[][] = [];
+    const promise = discoverOpencodeModels({
+      cwd: '/repo',
+      spawn: (_bin, args) => {
+        spawned.push([...args]);
+        const child = spawned.length === 1 ? verbose : plain;
+        queueMicrotask(() => {
+          if (spawned.length === 1) verbose.close(1);
+          else {
+            plain.say('openai/gpt-5.4\n');
+            plain.close(0);
+          }
+        });
+        return child.child;
+      },
+    });
+
+    await expect(promise).resolves.toEqual([
+      { id: 'openai/gpt-5.4', label: 'openai/gpt-5.4', description: 'via openai' },
+    ]);
+    expect(spawned).toEqual([['models', '--verbose'], ['models']]);
   });
 
   it('passes the runner binary override through', async () => {

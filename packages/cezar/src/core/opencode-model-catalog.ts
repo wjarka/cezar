@@ -48,53 +48,74 @@ export async function discoverOpencodeModels(
   options: OpencodeModelDiscoveryOptions,
 ): Promise<ModelOption[]> {
   const bin = resolveOpencodeExecutable(options.bin);
-  const args = ['models', '--verbose'] as const;
-  const child = (options.spawn ?? spawnOpencode)(bin, args, options.cwd);
-  const kill = teardown(child);
-
-  const timeoutMs = options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  let timeout: NodeJS.Timeout | undefined;
-
+  const spawn = options.spawn ?? spawnOpencode;
+  const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS);
   try {
-    return await new Promise<ModelOption[]>((resolve, reject) => {
-      let stdout = '';
-      let overflowed = false;
+    return await runOpencodeProbe(bin, ['models', '--verbose'], options.cwd, spawn, deadline);
+  } catch (error) {
+    if (!(error instanceof OpencodeNonzeroExitError) || Date.now() >= deadline) throw error;
+    // Older OpenCode releases know `models` but not `--verbose`. Preserve their existing model
+    // picker and let every model use the cockpit's metadata fallback.
+    return runOpencodeProbe(bin, ['models'], options.cwd, spawn, deadline);
+  }
+}
 
-      const fail = (message: string) => {
-        reject(new Error(message));
+class OpencodeNonzeroExitError extends Error {}
+
+async function runOpencodeProbe(
+  bin: string,
+  args: readonly string[],
+  cwd: string,
+  spawn: NonNullable<OpencodeModelDiscoveryOptions['spawn']>,
+  deadline: number,
+): Promise<ModelOption[]> {
+  const child = spawn(bin, args, cwd);
+  const kill = teardown(child);
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const result = new Promise<ModelOption[]>((resolve, reject) => {
+      let stdout = '';
+      let settled = false;
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
         kill();
       };
 
-      timeout = setTimeout(() => fail('OpenCode model discovery timed out'), timeoutMs);
+      timeout = setTimeout(
+        () => fail(new Error('OpenCode model discovery timed out')),
+        Math.max(1, deadline - Date.now()),
+      );
       timeout.unref?.();
-
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
-        if (overflowed) return;
+        if (settled) return;
         stdout += chunk;
         if (stdout.length > MAX_OUTPUT_CHARS) {
-          overflowed = true;
-          fail('OpenCode model discovery exceeded the output limit');
+          fail(new Error('OpenCode model discovery exceeded the output limit'));
         }
       });
-      // Drained but ignored: OpenCode prints provider warnings here, and an unread pipe would
-      // eventually stall the child.
       child.stderr.resume();
-
-      child.once('error', () => fail('OpenCode model discovery child failed'));
+      child.stdin.once('error', () => fail(new Error('OpenCode model discovery stdin failed')));
+      child.once('error', () => fail(new Error('OpenCode model discovery child failed')));
       child.once('close', (code) => {
-        if (overflowed) return;
+        if (settled) return;
         if (code !== 0) {
-          fail(`OpenCode model discovery child exited (${code ?? 'unknown'})`);
+          fail(new OpencodeNonzeroExitError(`OpenCode model discovery child exited (${code ?? 'unknown'})`));
           return;
         }
         try {
-          resolve(parseOpencodeModels(stdout));
+          const models = parseOpencodeModels(stdout);
+          settled = true;
+          resolve(models);
         } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
+          fail(error instanceof Error ? error : new Error(String(error)));
         }
       });
     });
+    child.stdin.end();
+    return await result;
   } finally {
     if (timeout) clearTimeout(timeout);
     kill();
@@ -183,14 +204,10 @@ function spawnOpencode(
   args: readonly string[],
   cwd: string,
 ): ChildProcessWithoutNullStreams {
-  const child = nodeSpawn(bin, [...args], {
+  return nodeSpawn(bin, [...args], {
     cwd,
     env: buildChildEnv({ backend: 'opencode' }),
   });
-  // Nothing is ever written to it, and an open stdin is what makes a CLI that expects a TTY
-  // sit and wait instead of printing its list.
-  child.stdin.end();
-  return child;
 }
 
 /**
