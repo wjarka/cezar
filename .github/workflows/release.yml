@@ -20,7 +20,7 @@ on:
 
 permissions:
   contents: write # create the release tag + GitHub Release via the API
-  id-token: write # npm provenance attestation
+  id-token: write # npm trusted publishing (OIDC) + provenance
   pull-requests: write # open the version-bump PR for patch/minor/major releases
 
 concurrency:
@@ -70,8 +70,11 @@ jobs:
 
       - name: Publish release
         id: release
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No npm credential in this job. npm authenticates via OIDC trusted
+        # publishing (package settings → Trusted Publisher → release.yml /
+        # production). Snapshots and nightlies keep the token — one publisher
+        # per package, and dist-tag cleanup is not an OIDC command. See
+        # docs/publishing.md.
         run: node scripts/release.mjs "${{ inputs.bump }}"
 
       # `main` is a protected branch (PR-only, signed commits required), so a
@@ -154,6 +157,6 @@ jobs:
             if [ "$PUBLISHED" = "true" ]; then
               echo "Published \`${ALIAS_NAME}@${VERSION}\` to \`latest\` and tagged \`v${VERSION}\`."
             else
-              echo "⚠️ Dry run — \`NPM_TOKEN\` is not configured, nothing was published. See \`docs/publishing.md\`."
+              echo "⚠️ Dry run — nothing was published. See \`docs/publishing.md\`."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

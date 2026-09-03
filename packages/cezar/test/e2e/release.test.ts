@@ -105,9 +105,25 @@ function runScript(fixtureRoot: string, args: string[], extraEnv: Record<string,
     GITHUB_OUTPUT: join(fixtureRoot, 'github-output.txt'),
     NODE_AUTH_TOKEN: '',
     GITHUB_ACTIONS: '',
+    // Pin these off so a host Actions job with `id-token: write` cannot make
+    // the missing-token test see an OIDC path that the fixture never set.
+    ACTIONS_ID_TOKEN_REQUEST_URL: '',
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: '',
     ...extraEnv,
   };
   return execFile(process.execPath, [script, ...args], { env, maxBuffer: 10 * 1024 * 1024 });
+}
+
+async function writeNpmStub(root: string): Promise<{ stub: string; log: string }> {
+  const stub = join(root, 'npm-stub.mjs');
+  const log = join(root, 'npm-stub.log');
+  await writeFile(
+    stub,
+    `import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.NPM_STUB_LOG, \`\${process.argv.slice(2).join(' ')}\\n\`);
+`,
+  );
+  return { stub, log };
 }
 
 test('a patch bump stamps every manifest, keeps the caret ranges, and emits the version', { timeout: 120_000 }, async () => {
@@ -213,6 +229,51 @@ test('a missing NPM token forces a dry run instead of publishing', { timeout: 12
     const output = await readFile(join(root, 'github-output.txt'), 'utf8');
     assert.match(output, /^published=false$/m);
     assert.match(output, /^version=0\.2\.0$/m);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('OIDC without a token does not force a dry run and does not pass --provenance', { timeout: 120_000 }, async () => {
+  const root = await makeFixture('0.1.5');
+  try {
+    await writeFile(join(root, 'github-output.txt'), '');
+    const { stub, log } = await writeNpmStub(root);
+    const { stdout } = await runScript(root, ['patch'], {
+      NODE_AUTH_TOKEN: '',
+      GITHUB_ACTIONS: 'true',
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.invalid/oidc',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'fake-oidc',
+      npm_execpath: stub,
+      NPM_STUB_LOG: log,
+    });
+    assert.doesNotMatch(stdout, /forcing --dry-run/);
+    const output = await readFile(join(root, 'github-output.txt'), 'utf8');
+    assert.match(output, /^published=true$/m);
+    const npmArgs = await readFile(log, 'utf8');
+    assert.match(npmArgs, /^publish /m);
+    assert.doesNotMatch(npmArgs, /--dry-run/);
+    // Trusted publishing generates provenance itself; a second --provenance is a duplicate.
+    assert.doesNotMatch(npmArgs, /--provenance/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a token publish from Actions still passes --provenance', { timeout: 120_000 }, async () => {
+  const root = await makeFixture('0.1.5');
+  try {
+    await writeFile(join(root, 'github-output.txt'), '');
+    const { stub, log } = await writeNpmStub(root);
+    await runScript(root, ['patch'], {
+      NODE_AUTH_TOKEN: 'npm_fake_token',
+      GITHUB_ACTIONS: 'true',
+      npm_execpath: stub,
+      NPM_STUB_LOG: log,
+    });
+    const npmArgs = await readFile(log, 'utf8');
+    assert.match(npmArgs, /--provenance/);
+    assert.doesNotMatch(npmArgs, /--dry-run/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
