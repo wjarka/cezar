@@ -215,7 +215,7 @@ const MONITORING_WAKE_NUDGE =
 
 /** A question at the handoff boundary may be followed by Markdown answer choices. */
 function hasUserQuestion(text: string): boolean {
-  const lines = text.trimEnd().split('\n');
+  const lines = stripTaskMarkers(text).trimEnd().split('\n');
   while (lines.length > 0) {
     const line = lines.pop()!.trim();
     if (!line || /^(?:[-*+]|\d+[.)])\s+\S/.test(line)) continue;
@@ -2956,7 +2956,11 @@ export class RunManager {
         const waiting = interactive && sessionOpen;
         let autoContinued = false;
         if (waiting) {
-          autoContinued = this.tryAutoContinueTurn(runId, state, markerlessMidWork);
+          autoContinued = this.tryAutoContinueTurn(
+            runId,
+            state,
+            !ask && (state.autonomous === true || markerlessMidWork),
+          );
           if (!autoContinued) {
             // Turn over, session open. Either the ball is in the user's court
             // (`waiting`) — optionally with a structured `CEZ:ASK` question the

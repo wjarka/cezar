@@ -82,6 +82,7 @@ async function respond(userText, imageCount) {
   // steps while keeping the session open (#48).
   const rhetoricalMidWork = userText.includes('mock:rhetorical-mid-work');
   const midWork = rhetoricalMidWork || userText.includes('mock:mid-work');
+  const noToolMidWork = userText.includes('mock:no-tool-mid-work');
   const questionOptions = userText.includes('mock:question-options');
   const questionMarkdown = userText.includes('mock:question-markdown');
   // `mock:done` anywhere in the message → the reply ends with the CEZ:DONE
@@ -427,6 +428,26 @@ async function respond(userText, imageCount) {
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'example source' }] },
     });
     await sleep(100);
+  }
+
+  if (turn === 1 && noToolMidWork) {
+    emit({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `The implementation is in progress; tests are next.${refsMarkers}` }],
+        usage: { input_tokens: 300, output_tokens: 40 },
+      },
+    });
+    await sleep(150);
+    emit({
+      type: 'result',
+      subtype: 'success',
+      result: 'Implementation in progress (dry run).',
+      usage: { input_tokens: 900, output_tokens: 90 },
+      total_cost_usd: 0.01,
+    });
+    return;
   }
 
   if (turn === 1) {
