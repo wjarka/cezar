@@ -226,17 +226,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function spawnPi(
+export function spawnPi(
   bin: string,
   args: readonly string[],
   cwd: string,
+  spawnImpl: (
+    bin: string,
+    args: string[],
+    options: { cwd: string; env: NodeJS.ProcessEnv },
+  ) => ChildProcessWithoutNullStreams = nodeSpawn,
 ): ChildProcessWithoutNullStreams {
-  const child = nodeSpawn(bin, [...args], {
+  return spawnImpl(bin, [...args], {
     cwd,
     env: buildChildEnv({ backend: 'pi' }),
   });
-  child.stdin.end();
-  return child;
 }
 
 /**

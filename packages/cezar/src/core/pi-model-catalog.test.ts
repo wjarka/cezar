@@ -7,6 +7,7 @@ import {
   discoverPiModels,
   parsePiEffortLevels,
   parsePiModels,
+  spawnPi,
 } from './pi-model-catalog.ts';
 
 /**
@@ -163,6 +164,12 @@ describe('parsePiEffortLevels', () => {
 });
 
 describe('discoverPiModels', () => {
+  it('leaves stdin open for the caller that owns list or RPC input', () => {
+    const fake = fakeChild();
+    spawnPi('pi', ['--mode', 'rpc'], '/repo', () => fake.child);
+    expect(fake.child.stdin.writableEnded).toBe(false);
+  });
+
   it('enriches each listed model through one RPC child without changing model order', async () => {
     const base = fakeChild();
     const rpc = fakeChild();
