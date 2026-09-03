@@ -712,6 +712,7 @@ function AgentBadge({ run }: { run: ApiRun }) {
   const profiles = useAgentProfiles()
   const runner = run.runner ?? config.data?.defaultRunner ?? 'claude'
   const model = run.model ?? 'auto'
+  const effort = run.effort || undefined
   // The account is read from the STEP that actually spawned, never from the run's composer
   // override or the project's current selection (spec 2026-07-29-agent-profiles): the override is
   // absent whenever the run just followed the project, and the project's selection can have been
@@ -733,7 +734,7 @@ function AgentBadge({ run }: { run: ApiRun }) {
   // omitted-not-guessed rule as the account line below: an identity nothing wrote down is not
   // one this header may invent.
   const identity = run.modelIdentity && run.modelIdentity !== model ? run.modelIdentity : undefined
-  const summary = [runner, account, model].filter(Boolean).join(' · ')
+  const summary = [runner, account, model, effort].filter(Boolean).join(' · ')
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -741,7 +742,7 @@ function AgentBadge({ run }: { run: ApiRun }) {
           type="button"
           data-slot="agent-badge"
           title={summary}
-          aria-label={`Agent: ${runner}, ${account ? `account ${account}, ` : ''}model ${model}`}
+          aria-label={`Agent: ${runner}, ${account ? `account ${account}, ` : ''}model ${model}${effort ? `, effort ${effort}` : ''}`}
           className="flex min-w-0 shrink items-center gap-1.5 rounded-sm px-1 py-1 text-soft-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
         >
           <BotIcon className="size-3.5 shrink-0" aria-hidden="true" />
@@ -772,6 +773,14 @@ function AgentBadge({ run }: { run: ApiRun }) {
         <DropdownMenuLabel className="font-mono text-[11px] font-normal text-muted-foreground">
           model: {model}
         </DropdownMenuLabel>
+        {effort ? (
+          <DropdownMenuLabel
+            data-slot="agent-badge-effort"
+            className="font-mono text-[11px] font-normal text-muted-foreground"
+          >
+            effort: {effort}
+          </DropdownMenuLabel>
+        ) : null}
         {identity ? (
           <DropdownMenuLabel
             data-slot="agent-badge-identity"
