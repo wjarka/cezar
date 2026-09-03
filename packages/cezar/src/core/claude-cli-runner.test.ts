@@ -51,6 +51,26 @@ describe('buildClaudeArgs systemPrompt', () => {
   });
 });
 
+describe('buildClaudeArgs effort (#45)', () => {
+  const spec = { userPrompt: 'do it', cwd: '/tmp' };
+
+  it('emits --effort next to --model when a canonical pin is set', () => {
+    const args = buildClaudeArgs({ ...spec, model: 'opus', effort: 'xhigh' });
+    const idx = args.indexOf('--effort');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('xhigh');
+  });
+
+  it('omits the flag when effort is unset so the harness keeps its default', () => {
+    expect(buildClaudeArgs(spec)).not.toContain('--effort');
+  });
+
+  it('omits the flag for auto/unknown values rather than sending a no-op string', () => {
+    expect(buildClaudeArgs({ ...spec, effort: 'auto' })).not.toContain('--effort');
+    expect(buildClaudeArgs({ ...spec, effort: 'nope' })).not.toContain('--effort');
+  });
+});
+
 describe('buildClaudeArgs approval gate', () => {
   const spec = { userPrompt: 'do it', cwd: '/tmp' };
 

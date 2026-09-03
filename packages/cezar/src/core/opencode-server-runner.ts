@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { parseEffort } from '@open-mercato/cezar-contract';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import type {
   AgentEvent,
@@ -419,6 +420,8 @@ class OpencodeSession implements AgentSession {
     // one every runner uses — into opencode's `{ providerID, modelID }`.
     const id = parseModelIdentity(this.spec.model);
     if (id) body.model = { providerID: id.provider, modelID: id.model };
+    const effort = parseEffort(this.spec.effort);
+    if (effort) body.variant = effort;
     try {
       await this.http('POST', `/session/${this.sessionId}/prompt_async`, body);
     } catch (err) {

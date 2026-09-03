@@ -362,6 +362,16 @@ describe('pi RPC argv', () => {
       }),
     ).toEqual(['--mode', 'rpc', '--tools', 'read,bash']);
   });
+
+  it('maps a canonical effort pin onto --thinking and omits it when unset', () => {
+    expect(
+      buildPiArgs({ cwd: '/repo', userPrompt: 'task', effort: 'high' }),
+    ).toEqual(['--mode', 'rpc', '--thinking', 'high']);
+    expect(buildPiArgs({ cwd: '/repo', userPrompt: 'task' })).not.toContain('--thinking');
+    expect(
+      buildPiArgs({ cwd: '/repo', userPrompt: 'task', effort: 'auto' }),
+    ).not.toContain('--thinking');
+  });
 });
 
 describe('pi spawns under pi credentials, not another runner', () => {

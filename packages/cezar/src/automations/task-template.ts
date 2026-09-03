@@ -57,6 +57,7 @@ export async function launchAutomationRun(options: {
   const input: StartRunInput = {
     task: renderAutomationTask(definition, candidate),
     model: definition.task.model,
+    effort: definition.task.effort,
     runner: definition.task.runner,
     systemPrompt: definition.task.systemPrompt,
     worktree: definition.task.worktree,

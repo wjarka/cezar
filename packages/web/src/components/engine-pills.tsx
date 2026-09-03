@@ -4,6 +4,7 @@ import type { CreateRunInput, Runner } from '@open-mercato/cezar-api-client'
 import { PickerPill, RunnerPill, type RunnerAccountChoice } from '@/components/picker-pill'
 import { usableRunners } from '@/lib/provider-status'
 import {
+  EFFORT_OPTIONS,
   modelsForRunner,
   modelCatalogStatus,
   resolveModel,
@@ -30,6 +31,8 @@ import {
 export interface EnginePick {
   runner: Runner | null
   model: string | null
+  /** Reasoning-effort pin (#45). `null` = never touched (auto). */
+  effort: string | null
   /**
    * Which login of that agent runs it (spec 2026-07-29-agent-profiles). Three states, and the
    * first two are NOT the same thing: `null` follows the project's selection (and keeps following
@@ -46,6 +49,8 @@ export interface ResolvedEngine {
   /** A sticky/user pick must ride the request even when it currently equals the default. */
   runnerExplicit: boolean
   model: string
+  /** Canonical effort or `''` for auto. */
+  effort: string
   /** The backends this host offers — the runner pill renders only when there is a choice. */
   runners: readonly Runner[]
   /** What the active project's server context would pick from its authoritative config. */
@@ -88,6 +93,7 @@ export function useResolvedEngine(pick: EnginePick): ResolvedEngine {
     runner,
     runnerExplicit: pick.runner !== null,
     model: resolveModel(modelsLocked ? null : pick.model, runner, config.data?.defaultModels, catalog.data),
+    effort: modelsLocked ? '' : (pick.effort ?? ''),
     runners,
     defaultRunner,
     canRun: providers.isSuccess && runners.length > 0,
@@ -117,10 +123,11 @@ export function useResolvedEngine(pick: EnginePick): ResolvedEngine {
  * and explicitly sends the provider-status fallback when it is not. A sticky/user pick always
  * rides the request, so a boot-project snapshot can never erase that intent.
  */
-export function engineBody(resolved: ResolvedEngine): Pick<CreateRunInput, 'runner' | 'model'> {
+export function engineBody(resolved: ResolvedEngine): Pick<CreateRunInput, 'runner' | 'model' | 'effort'> {
   return {
     runner: runnerOverride(resolved.runner, resolved.defaultRunner, resolved.runnerExplicit),
     model: resolved.modelsLocked ? undefined : resolved.model || undefined,
+    effort: resolved.modelsLocked ? undefined : resolved.effort || undefined,
   }
 }
 
@@ -139,7 +146,7 @@ export function engineBody(resolved: ResolvedEngine): Pick<CreateRunInput, 'runn
  */
 export function engineRunBody(
   resolved: ResolvedEngine,
-): Pick<CreateRunInput, 'runner' | 'model' | 'agentProfile'> {
+): Pick<CreateRunInput, 'runner' | 'model' | 'effort' | 'agentProfile'> {
   return {
     ...engineBody(resolved),
     ...(resolved.account ? { agentProfile: resolved.account } : {}),
@@ -165,7 +172,7 @@ export function EnginePills({
   accounts?: boolean
 }) {
   const resolved = useResolvedEngine(pick)
-  const { runner, model, runners, canRun, modelsLocked } = resolved
+  const { runner, model, effort, runners, canRun, modelsLocked } = resolved
   const config = useConfig()
   const catalog = useRunnerModels(runner)
   const models = modelsForRunner(runner, catalog.data, [pick.model, config.data?.defaultModels?.[runner]])
@@ -194,8 +201,8 @@ export function EnginePills({
           onPick={(next, picked) =>
             onChange(
               accounts
-                ? { runner: next, account: picked, model: next === runner ? pick.model : null }
-                : { runner: next, account: null, model: null },
+                ? { runner: next, account: picked, model: next === runner ? pick.model : null, effort: pick.effort }
+                : { runner: next, account: null, model: null, effort: pick.effort },
             )
           }
         />
@@ -213,6 +220,17 @@ export function EnginePills({
         onPick={(next) => onChange({ ...pick, model: next })}
         options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
         status={modelCatalogStatus(runner, catalog.data, catalog.isError)}
+      />
+      <PickerPill
+        slot="effort-pill"
+        ariaLabel="Effort"
+        label={EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'auto'}
+        value={effort}
+        disabled={unavailable}
+        readOnly={modelsLocked === true}
+        disabledHint={modelsLocked ? 'Effort selection is locked to native coding-agent settings.' : undefined}
+        onPick={(next) => onChange({ ...pick, effort: next })}
+        options={EFFORT_OPTIONS.map((option) => ({ value: option.value, label: option.label, desc: option.desc }))}
       />
     </>
   )

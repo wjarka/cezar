@@ -56,6 +56,10 @@ export interface AgentRunSpec {
    *  e.g. CEZ_HANDOFF_FILE / CEZ_TODOS_FILE / CEZ_TASK_ID (spec 007). */
   env?: Record<string, string>;
   model?: string;
+  /** Reasoning-effort pin (#45). Canonical `low`/`medium`/`high`/`xhigh`/`max`;
+   *  absent means each harness keeps its own default. Same class of override as
+   *  `model`, so `modelsLocked` suppresses it too. */
+  effort?: string;
   /** Wall-clock kill switch for the run (ms). */
   timeoutMs?: number;
   /**

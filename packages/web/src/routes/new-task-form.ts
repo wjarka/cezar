@@ -89,6 +89,18 @@ export const MODELS_BY_RUNNER: Record<Runner, readonly ModelPreset[]> = {
   ],
 }
 
+/** Shared effort catalog (#45). `value: ''` is auto — omitted on the wire, harness default.
+ *  Every runner currently honors the full set (claude `--effort`, pi `--thinking`,
+ *  codex `turn/start` effort, opencode `variant`). Hide a row here if a harness drops it. */
+export const EFFORT_OPTIONS = [
+  { value: '', label: 'auto', desc: 'Harness default' },
+  { value: 'low', label: 'low', desc: 'Less reasoning, faster replies' },
+  { value: 'medium', label: 'medium', desc: 'Balanced reasoning' },
+  { value: 'high', label: 'high', desc: 'More reasoning for hard tasks' },
+  { value: 'xhigh', label: 'xhigh', desc: 'Extra-high reasoning' },
+  { value: 'max', label: 'max', desc: 'Maximum reasoning' },
+] as const
+
 /** Runners that pick with the canonical `provider/model` convention and span every provider the
  *  host has configured, so an id they list is never EXCLUSIVE to them: both pi and OpenCode
  *  can serve `openai/gpt-5.1` from the same provider. Their discovered ids are therefore
@@ -265,6 +277,8 @@ export function buildCreateRunBody(opts: {
   model: string
   /** Native coding-agent settings stay visible, but a locked model is never a request override. */
   modelsLocked?: boolean
+  /** Reasoning-effort pin (#45). `''` = auto, omitted on the wire. Locked with `modelsLocked`. */
+  effort?: string
   runner: Runner
   /** True when the draft contains a sticky/user runner choice rather than an untouched default. */
   runnerExplicit?: boolean
@@ -292,6 +306,7 @@ export function buildCreateRunBody(opts: {
     source,
     model,
     modelsLocked,
+    effort,
     runner,
     runnerExplicit,
     defaultRunner,
@@ -309,6 +324,7 @@ export function buildCreateRunBody(opts: {
       ? { steps: [{ id: 'task', name: source.ref, skill: source.ref, prompt: '{{task}}' }] }
       : { workflow: source?.ref ?? QUICK_TASK }),
     model: modelsLocked ? undefined : model || undefined,
+    effort: modelsLocked ? undefined : effort || undefined,
     runner: runnerOverride(runner, defaultRunner, runnerExplicit),
     // Sent only when the user picked one — an absent key is "follow the project", which is what
     // every launch that never touched the control means.

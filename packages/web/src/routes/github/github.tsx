@@ -225,7 +225,7 @@ export function GithubRoute({ view, changes = false }: { view: GithubView; chang
   // and it must, because HandToAgent is keyed by item and would otherwise reset on every hop.
   // The agent account rides along on the same footing: a per-hand-off choice, route state rather
   // than a persisted one, exactly like the runner and the model beside it.
-  const [engine, setEngine] = useState<EnginePick>({ runner: null, model: null, account: null })
+  const [engine, setEngine] = useState<EnginePick>({ runner: null, model: null, effort: null, account: null })
   useEffect(() => {
     writeFollowupSelection({ workflow, skills: [...selectedSkills] })
   }, [workflow, selectedSkills])

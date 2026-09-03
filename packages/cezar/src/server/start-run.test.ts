@@ -128,6 +128,22 @@ describe('POST /api/v1/runs systemPrompt', () => {
     expect(captured?.runner).toBe('codex');
     expect(captured?.model).toBeUndefined();
   });
+
+  it('passes an effort pin through and rejects it while models are locked (#45)', async () => {
+    const ok = await post({ ...base, effort: 'high' });
+    expect(ok.status).toBe(201);
+    expect(captured?.effort).toBe('high');
+
+    writeFileSync(
+      join(repoRoot, '.ai', 'cezar', 'config.json'),
+      JSON.stringify({ modelsLocked: true }),
+      'utf8',
+    );
+    captured = undefined;
+    const rejected = await post({ ...base, effort: 'max' });
+    expect(rejected.status).toBe(409);
+    expect(captured).toBeUndefined();
+  });
 });
 
 /**

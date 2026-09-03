@@ -91,6 +91,7 @@ import {
 } from './new-task-draft'
 import {
   buildCreateRunBody,
+  EFFORT_OPTIONS,
   modelsForRunner,
   modelCatalogStatus,
   pushRecentSource,
@@ -230,6 +231,7 @@ export function NewTaskRoute() {
   const model = runner === null
     ? ''
     : resolveModel(modelsLocked ? null : draft.model, runner, config.data?.defaultModels, catalog.data)
+  const effort = modelsLocked ? '' : (draft.effort ?? '')
   // Agent accounts (spec 2026-07-29-agent-profiles). These are rows of the RUNNER pill rather than
   // a pill of their own — `claude · Default` / `claude · Klaudiusz` / `codex` — so what will run is
   // readable at a glance instead of assembled from two controls. An agent with a single login stays
@@ -442,6 +444,7 @@ export function NewTaskRoute() {
         source,
         model,
         modelsLocked,
+        effort,
         runner,
         runnerExplicit: draft.runner !== null,
         agentProfile,
@@ -498,6 +501,7 @@ export function NewTaskRoute() {
           steps: plan.steps,
           model,
           modelsLocked,
+          effort,
           runner,
           runnerExplicit: draft.runner !== null,
           defaultRunner,
@@ -654,6 +658,25 @@ export function NewTaskRoute() {
                 onPick={(next) => update({ model: next })}
                 options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
                 status={modelCatalogStatus(displayRunner, catalog.data, catalog.isError)}
+              />
+              <PickerPill
+                slot="effort-pill"
+                ariaLabel="Effort"
+                label={EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'auto'}
+                value={effort}
+                disabled={!providersReady}
+                readOnly={modelsLocked}
+                disabledHint={
+                  modelsLocked
+                    ? 'Effort selection is locked to native coding-agent settings.'
+                    : undefined
+                }
+                onPick={(next) => update({ effort: next })}
+                options={EFFORT_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                  desc: option.desc,
+                }))}
               />
               <PickerPill
                 slot="variants-pill"

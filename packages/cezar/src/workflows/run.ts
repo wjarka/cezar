@@ -320,6 +320,9 @@ function formatWakeInstant(at: Date): string {
 export interface StartRunInput {
   task: string;
   model?: string;
+  /** Reasoning-effort pin (#45). Canonical `low`/`medium`/`high`/`xhigh`/`max`.
+   *  Unset = harness default. Same class of override as `model`. */
+  effort?: string;
   /** Agent backend chosen for this task (GUI). Unset = the config default. */
   runner?: RunnerId;
   /** Agent account for this task (spec 2026-07-29-agent-profiles), applying to steps that run
@@ -731,13 +734,14 @@ export class RunManager {
     // Sanitize at the manager boundary so CLI runs, workflows, variants, and
     // direct callers cannot bypass the HTTP policy.
     const effectiveInput = agentModelsLocked(this.repoRoot)
-      ? { ...input, model: undefined }
+      ? { ...input, model: undefined, effort: undefined }
       : input;
     const run = this.store.createRun({
       title: makeRunTitle(input.task, workflow) + (group ? ` (${group.variant})` : ''),
       workflow: workflow.name,
       task: input.task,
       model: effectiveInput.model,
+      effort: effectiveInput.effort,
       runner: input.runner,
       // The composer's per-task account (spec 2026-07-29-agent-profiles). Persisted at creation
       // so a queued run picks it up at dequeue and every later resume reads the same answer.
@@ -1051,6 +1055,7 @@ export class RunManager {
       input: this.hydrateQueuedInput(run.id, {
         task: run.task,
         model: run.model,
+        effort: run.effort,
         runner: run.runner,
         generateFollowups,
         // Re-thread autonomy (#489): the rebuilt input feeds `execute`, whose mid-run auto-nudge
@@ -1992,6 +1997,8 @@ export class RunManager {
       images?: ContentBlock[];
       runner?: RunnerId;
       model?: string;
+      /** Reasoning-effort pin (#45). Omitted keeps the run's pin; empty string clears it. */
+      effort?: string;
       /** Agent account for the reopened session (spec 2026-07-29-agent-profiles). Omitted = the
        *  account the run is already on. */
       agentProfile?: string;
@@ -2000,7 +2007,7 @@ export class RunManager {
      *  continuations are queued; an explicit user Continue remains immediate. */
     deferForCapacity = false,
   ): { ok: boolean; error?: string } {
-    if (agentModelsLocked(this.repoRoot) && opts.model?.trim()) {
+    if (agentModelsLocked(this.repoRoot) && (opts.model?.trim() || opts.effort?.trim())) {
       return { ok: false, error: AGENT_MODELS_LOCKED_ERROR };
     }
     if (this.active.has(runId)) return { ok: false, error: 'run is still active' };
@@ -2033,7 +2040,12 @@ export class RunManager {
     // run's current backend — `runContinuation` reads it off the record, later continuations
     // default to it, and the header reflects the active engine. An empty model ('') clears the
     // pin, letting the runner pick the model (auto).
-    if (opts.runner !== undefined || opts.model !== undefined || opts.agentProfile !== undefined) {
+    if (
+      opts.runner !== undefined ||
+      opts.model !== undefined ||
+      opts.effort !== undefined ||
+      opts.agentProfile !== undefined
+    ) {
       // Guard the pairing before persisting anything: the model override applies to the runner
       // this continuation will actually use (`opts.runner ?? record.runner ?? 'claude'` — the
       // same resolution `runContinuation` reads off the record). A model that is recognizably
@@ -2073,6 +2085,9 @@ export class RunManager {
           : inheritedAccountIsForeign
             ? { agentProfile: undefined }
             : {}),
+        // Effort is shared vocabulary, not per-backend, so a runner switch keeps the pin.
+        // Empty string clears it the same way `model: ''` clears auto.
+        ...(opts.effort !== undefined ? { effort: opts.effort === '' ? undefined : opts.effort } : {}),
       });
     }
 
@@ -2458,6 +2473,7 @@ export class RunManager {
         additionalDirectories: agentDirectories(join(this.dataDir, 'runs'), continueProfile.env),
         env: continueProfile.env,
         model: continueModel,
+        effort: agentModelsLocked(this.repoRoot) ? undefined : record?.effort,
         sessionId,
         resume: sessionId !== undefined,
         timeoutMs: 0,
@@ -3046,6 +3062,9 @@ export class RunManager {
           additionalDirectories: agentDirectories(join(this.dataDir, 'runs'), stepProfile.env),
           env: stepProfile.env,
           model: backendModel,
+          effort: agentModelsLocked(this.repoRoot)
+            ? undefined
+            : this.store.getRun(runId)?.effort ?? input.effort,
           sessionId,
           // Interactive sessions have no wall clock — the idle timer rules.
           timeoutMs: interactive ? 0 : undefined,

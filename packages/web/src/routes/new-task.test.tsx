@@ -394,6 +394,7 @@ describe('picker data flows', () => {
     await pillReady()
     expect(document.querySelector('[data-slot="runner-pill"]')).toBeNull()
     expect(document.querySelector('[data-slot="model-pill"]')).not.toBeNull()
+    expect(document.querySelector('[data-slot="effort-pill"]')).not.toBeNull()
   })
 
   it('shows the runner pill with >1 backend, and switching runner swaps the model presets', async () => {
@@ -465,7 +466,7 @@ describe('picker data flows', () => {
 
   it('drops a persisted model preset that belongs to another runner', async () => {
     writeDraft({
-      text: '', source: null, runner: 'codex', agentProfile: null, model: 'claude-opus-4-8', variants: 1,
+      text: '', source: null, runner: 'codex', agentProfile: null, model: 'claude-opus-4-8', effort: null, variants: 1,
       planFirst: false, worktree: null, autonomous: null, generateFollowups: null,
     })
     serve({ health: HEALTH_MULTI, providerStatus: PROVIDERS_MULTI })
@@ -950,7 +951,7 @@ describe('submit', () => {
     // 404, not a 5xx: the query client never retries a 4xx (query-client.ts), so the query
     // lands in its errored state immediately and the test stays deterministic.
     writeDraft({
-      text: '', source: { source: 'skill', ref: 'om-fix' }, runner: null, agentProfile: null, model: null,
+      text: '', source: { source: 'skill', ref: 'om-fix' }, runner: null, agentProfile: null, model: null, effort: null,
       variants: 1, planFirst: false, worktree: null, autonomous: null, generateFollowups: null,
     })
     serve({ createRun: { id: 'run-9' }, uiStateStatus: 404 })

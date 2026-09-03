@@ -8,6 +8,7 @@ import { DEFAULT_AGENT_ACCOUNT_ID } from '@open-mercato/cezar-api-client'
 import type { ApiRun, ContinueResponse, ImageInput, Runner } from '@open-mercato/cezar-api-client'
 import { PickerPill, RunnerPill } from '@/components/picker-pill'
 import {
+  EFFORT_OPTIONS,
   modelsForRunner,
   modelCatalogStatus,
   resolveModel,
@@ -55,7 +56,19 @@ export function useContinueAction(run: ApiRun): ContinueAction {
   // untouched Continue behaves exactly as before this feature existed.
   const [pickedRunner, setPickedRunner] = useState<Runner | null>(null)
   const [pickedModel, setPickedModel] = useState<string | null>(null)
+  const [pickedEffort, setPickedEffort] = useState<string | null>(null)
   const [pickedAccount, setPickedAccount] = useState<string | null>(null)
+  // The task route reuses this view across parameter changes, so a pick from run A must not
+  // stick when the user opens cached run B. Reset every pill on `run.id` — effort, model,
+  // runner, and account all leak the same way.
+  const [pickedRunId, setPickedRunId] = useState(run.id)
+  if (pickedRunId !== run.id) {
+    setPickedRunId(run.id)
+    setPickedRunner(null)
+    setPickedModel(null)
+    setPickedEffort(null)
+    setPickedAccount(null)
+  }
 
   const continuation = useContinuationProvider(run, pickedRunner)
   const { runners, canContinue, currentRunner, runner } = continuation
@@ -75,6 +88,11 @@ export function useContinueAction(run: ApiRun): ContinueAction {
   const effectivePickedModel = modelsLocked ? null : pickedModel
   const models = modelsForRunner(runner, catalog.data, [effectivePickedModel, modelDefaults?.[runner]])
   const model = resolveModel(effectivePickedModel, runner, modelDefaults, catalog.data)
+  const effort = modelsLocked
+    ? ''
+    : pickedEffort !== null
+      ? pickedEffort
+      : (run.effort ?? '')
 
   // Agent accounts (spec 2026-07-29-agent-profiles): rows of the RUNNER pill, exactly as the /new
   // composer offers them — `claude · Default` / `claude · Klaudiusz` / `codex`. Without them a
@@ -114,6 +132,7 @@ export function useContinueAction(run: ApiRun): ContinueAction {
         // connected fallback must be explicit even when the pills were untouched.
         runner: continuation.runnerOverride,
         model: !modelsLocked && pickedModel !== null ? model : undefined,
+        effort: !modelsLocked && pickedEffort !== null ? effort : undefined,
         // Only a login the user actually picked rides the request. Omitted, the run keeps the
         // account it is on — and the reopened session still resumes, which an explicit switch
         // deliberately does not (a session id lives inside ONE account's config dir).
@@ -163,6 +182,20 @@ export function useContinueAction(run: ApiRun): ContinueAction {
           onPick={(next) => setPickedModel(next)}
           options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
           status={modelCatalogStatus(runner, catalog.data, catalog.isError)}
+        />
+        <PickerPill
+          slot="follow-up-effort-pill"
+          ariaLabel="Effort"
+          label={EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'auto'}
+          value={effort}
+          readOnly={modelsLocked}
+          disabledHint="Effort selection is locked to native coding-agent settings."
+          onPick={(next) => setPickedEffort(next)}
+          options={EFFORT_OPTIONS.map((option) => ({
+            value: option.value,
+            label: option.label,
+            desc: option.desc,
+          }))}
         />
       </div>
     ),

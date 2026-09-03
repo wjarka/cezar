@@ -18,6 +18,7 @@ const resolved = (over: Partial<ResolvedEngine> = {}): ResolvedEngine => ({
   runner: 'claude',
   runnerExplicit: false,
   model: '',
+  effort: '',
   runners: ['claude'],
   defaultRunner: 'claude',
   canRun: true,
@@ -106,7 +107,7 @@ function stubResolverFetch({
   )
 }
 
-function renderResolved(pick: EnginePick = { runner: null, model: null, account: null }) {
+function renderResolved(pick: EnginePick = { runner: null, model: null, effort: null, account: null }) {
   const client = createQueryClient()
   return renderHook(() => useResolvedEngine(pick), {
     wrapper: ({ children }) =>
@@ -264,7 +265,13 @@ describe('engineBody', () => {
     const body = engineBody(
       resolved({ runner: 'claude', defaultRunner: 'claude', runners: ['claude'], model: '' }),
     )
-    expect(body).toEqual({ runner: undefined, model: undefined })
+    expect(body).toEqual({ runner: undefined, model: undefined, effort: undefined })
+  })
+
+  it('sends a pinned effort and omits auto (#45)', () => {
+    expect(engineBody(resolved({ effort: 'high' })).effort).toBe('high')
+    expect(engineBody(resolved({ effort: '' })).effort).toBeUndefined()
+    expect(engineBody(resolved({ effort: 'max', modelsLocked: true })).effort).toBeUndefined()
   })
 
   it.each<Runner>(['claude', 'codex', 'opencode', 'pi'])(
@@ -303,7 +310,7 @@ describe('engineRunBody', () => {
     const body = engineRunBody(
       resolved({ runner: 'codex', defaultRunner: 'claude', model: 'gpt-future', account: 'work' }),
     )
-    expect(body).toEqual({ runner: 'codex', model: 'gpt-future', agentProfile: 'work' })
+    expect(body).toEqual({ runner: 'codex', model: 'gpt-future', effort: undefined, agentProfile: 'work' })
   })
 })
 
@@ -343,7 +350,7 @@ describe('useResolvedEngine agent accounts', () => {
       profiles: TWO_CLAUDE_LOGINS,
     })
 
-    const { result } = renderResolved({ runner: 'claude', model: null, account: 'klaudiusz' })
+    const { result } = renderResolved({ runner: 'claude', model: null, effort: null, account: 'klaudiusz' })
     await waitFor(() => expect(result.current.account).toBe('klaudiusz'))
 
     expect(engineRunBody(result.current).agentProfile).toBe('klaudiusz')
@@ -365,7 +372,7 @@ describe('useResolvedEngine agent accounts', () => {
       profiles: TWO_CLAUDE_LOGINS,
     })
 
-    const { result } = renderResolved({ runner: 'codex', model: null, account: 'klaudiusz' })
+    const { result } = renderResolved({ runner: 'codex', model: null, effort: null, account: 'klaudiusz' })
     await waitFor(() => expect(result.current.runner).toBe('codex'))
 
     expect(result.current.account).toBeNull()
@@ -378,7 +385,7 @@ describe('useResolvedEngine agent accounts', () => {
       profiles: TWO_CLAUDE_LOGINS,
     })
 
-    const { result } = renderResolved({ runner: 'claude', model: null, account: 'deleted-login' })
+    const { result } = renderResolved({ runner: 'claude', model: null, effort: null, account: 'deleted-login' })
     await waitFor(() => expect(result.current.accounts).toHaveLength(3))
 
     expect(result.current.account).toBeNull()

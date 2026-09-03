@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { parseEffort } from '@open-mercato/cezar-contract';
 import type {
   AgentEvent,
   AgentRunResult,
@@ -390,7 +391,7 @@ class CodexSession implements AgentSession {
     const res = await this.rpc.request('turn/start', {
       threadId: this.threadId,
       input,
-      summary: reasoningSummary(),
+      ...codexTurnStartExtras(this.spec),
     });
     this.activeTurnId = turnIdOf(res) ?? this.activeTurnId;
   }
@@ -595,6 +596,22 @@ export function reasoningSummary(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env.CEZ_CODEX_REASONING?.trim().toLowerCase();
   if (!raw) return 'auto';
   return REASONING_SUMMARIES.has(raw) ? raw : 'auto';
+}
+
+/**
+ * Fields sent on `turn/start` besides thread/input. `summary` is the existing
+ * `CEZ_CODEX_REASONING` knob (out of scope for #45). `effort` is the per-run
+ * pin — omitted when unset so the app-server keeps its default.
+ */
+export function codexTurnStartExtras(
+  spec: Pick<AgentRunSpec, 'effort'>,
+  env: NodeJS.ProcessEnv = process.env,
+): { summary: string; effort?: string } {
+  const effort = parseEffort(spec.effort);
+  return {
+    summary: reasoningSummary(env),
+    ...(effort ? { effort } : {}),
+  };
 }
 
 function textOf(content: ContentBlock[]): string {
