@@ -28,7 +28,7 @@
 ## File map
 
 - Modify: `packages/contract/src/workspace.ts` — optional canonical metadata in the public model option.
-- Create: `packages/contract/src/workspace.test.ts` — runtime schema preservation and rejection coverage.
+- Create: `packages/cezar/src/server/model-contract.test.ts` — runtime schema preservation and rejection coverage (the root Vitest workspace does not execute contract-package tests directly).
 - Modify: `packages/cezar/src/core/runner-model-catalog.ts` — metadata type carried by cache entries.
 - Modify: `packages/cezar/src/core/runner-model-catalog.test.ts` — fresh/stale cache retention.
 - Modify: `packages/cezar/src/server/models-api.test.ts` — wire serialization coverage.
@@ -51,7 +51,7 @@
 
 **Files:**
 - Modify: `packages/contract/src/workspace.ts`
-- Create: `packages/contract/src/workspace.test.ts`
+- Create: `packages/cezar/src/server/model-contract.test.ts`
 - Modify: `packages/cezar/src/core/runner-model-catalog.ts`
 - Modify: `packages/cezar/src/core/runner-model-catalog.test.ts`
 - Modify: `packages/cezar/src/server/models-api.test.ts`
@@ -62,7 +62,7 @@
 
 - [ ] **Step 1: Write the failing contract test**
 
-Create `packages/contract/src/workspace.test.ts`:
+Create `packages/cezar/src/server/model-contract.test.ts` and import the public schema from `@open-mercato/cezar-contract`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -95,7 +95,7 @@ describe('runnerModelOptionSchema effort metadata (#55)', () => {
 
 - [ ] **Step 2: Run the contract test and verify RED**
 
-Run: `npm test -- packages/contract/src/workspace.test.ts`
+Run: `npm test -- packages/cezar/src/server/model-contract.test.ts`
 
 Expected: FAIL because Zod strips the unknown `effortLevels` key from the parsed result.
 
@@ -149,7 +149,7 @@ Assert the response model contains the same ordered array. These tests catch met
 Run:
 
 ```bash
-npm test -- packages/contract/src/workspace.test.ts packages/cezar/src/core/runner-model-catalog.test.ts packages/cezar/src/server/models-api.test.ts packages/cezar/src/server/contract-parity.workspace.test.ts
+npm test -- packages/cezar/src/server/model-contract.test.ts packages/cezar/src/core/runner-model-catalog.test.ts packages/cezar/src/server/models-api.test.ts packages/cezar/src/server/contract-parity.workspace.test.ts
 ```
 
 Expected: PASS. Contract parity compiles the exact route response against the changed schema.
@@ -157,7 +157,7 @@ Expected: PASS. Contract parity compiles the exact route response against the ch
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/contract/src/workspace.ts packages/contract/src/workspace.test.ts \
+git add packages/contract/src/workspace.ts packages/cezar/src/server/model-contract.test.ts \
   packages/cezar/src/core/runner-model-catalog.ts \
   packages/cezar/src/core/runner-model-catalog.test.ts \
   packages/cezar/src/server/models-api.test.ts
