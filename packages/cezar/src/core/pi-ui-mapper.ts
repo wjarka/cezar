@@ -266,12 +266,39 @@ function mapMessageEnd(value: Record<string, unknown>, state: PiUiMapperState): 
   if (!message || string(message.role) !== 'assistant') return { events: [], state };
   const closed = closeOpenPiText(state);
   state = closed.state;
+  const events = [...closed.events];
   const usage = usageEvent(message.usage);
-  if (!usage) return { events: closed.events, state };
-  return {
-    events: [...closed.events, usage],
-    state: { ...state, turnUsage: usage.usage, turnCostUsd: usage.costUsd ?? null },
-  };
+  if (usage) {
+    events.push(usage);
+    state = { ...state, turnUsage: usage.usage, turnCostUsd: usage.costUsd ?? null };
+  }
+  if (string(message.stopReason) === 'error') {
+    events.push({ type: 'session.error', message: piProviderErrorMessage(message), fatal: false });
+    state = { ...state, stopReason: 'error' };
+  }
+  return { events, state };
+}
+
+export function piProviderErrorMessage(message: Record<string, unknown>): string {
+  const detail = piProviderErrorDetail(message);
+  const provider = string(message.provider);
+  const model = string(message.model);
+  const who = provider && model ? `${provider}/${model}` : (provider ?? model);
+  if (who && detail) return `pi: ${who} request failed: ${detail}`;
+  if (who) return `pi: ${who} request failed`;
+  if (detail) return `pi: provider request failed: ${detail}`;
+  return 'pi: provider request failed';
+}
+
+function piProviderErrorDetail(message: Record<string, unknown>): string | undefined {
+  if (Array.isArray(message.diagnostics)) {
+    for (const diagnostic of message.diagnostics) {
+      if (!isRecord(diagnostic) || string(diagnostic.type) !== 'provider_transport_failure') continue;
+      const error = isRecord(diagnostic.error) ? string(diagnostic.error.message) : undefined;
+      if (error) return error;
+    }
+  }
+  return string(message.errorMessage);
 }
 
 function usageEvent(value: unknown): Extract<UiEvent, { type: 'usage.updated' }> | undefined {

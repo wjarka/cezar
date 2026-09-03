@@ -14,7 +14,7 @@ import type {
 } from './agent-runner.js';
 import { buildChildEnv } from './agent-env.js';
 import { readNdjson } from './ndjson.js';
-import { createPiUiState, mapPiRpcMessage, piTurnStarted } from './pi-ui-mapper.js';
+import { createPiUiState, mapPiRpcMessage, piProviderErrorMessage, piTurnStarted } from './pi-ui-mapper.js';
 import { V1TextCoalescer } from './v1-text-coalescer.js';
 
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
@@ -231,6 +231,9 @@ export class PiRunner implements AgentRunner {
               tokensUsed += usage.weighted;
               onEvent?.({ type: 'token-usage', tokensUsed });
               if (usage.cost > 0) onEvent?.({ type: 'cost', usd: usage.cost });
+            }
+            if (string(value.message.stopReason) === 'error') {
+              onEvent?.({ type: 'error', message: piProviderErrorMessage(value.message) });
             }
           } else if (value.type === 'tool_execution_start') {
             flushText();

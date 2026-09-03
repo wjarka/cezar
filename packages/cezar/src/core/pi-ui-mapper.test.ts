@@ -27,11 +27,22 @@ function replay(fixture: string): UiEvent[] {
   return JSON.parse(JSON.stringify(events)) as UiEvent[];
 }
 
+const GOLDEN_FIXTURES = [
+  'rpc-lifecycle',
+  // Persisted Pi session 3f60d363-22c6-4400-b60a-a2b76f0e405c (run c958f3c4,
+  // issue #54): empty assistant message_end with stopReason error and a
+  // provider_transport_failure diagnostic. RPC wrapping matches the runner's
+  // stdout, not the on-disk JSONL envelope.
+  'provider-error',
+] as const;
+
 describe('pi RPC → v2 golden fixture', () => {
-  it('maps the wire-faithful lifecycle exactly', () => {
-    const expected = JSON.parse(readFileSync(join(FIXTURES, 'rpc-lifecycle.expected.json'), 'utf8'));
-    expect(replay('rpc-lifecycle')).toStrictEqual(expected);
-  });
+  for (const fixture of GOLDEN_FIXTURES) {
+    it(`maps ${fixture} to the exact UiEvent sequence`, () => {
+      const expected = JSON.parse(readFileSync(join(FIXTURES, `${fixture}.expected.json`), 'utf8'));
+      expect(replay(fixture)).toStrictEqual(expected);
+    });
+  }
 
   it('malformed and unknown RPC messages are ignored without throwing', () => {
     const state = createPiUiState();
@@ -164,5 +175,58 @@ describe('pi text blocks as distinct v2 items', () => {
     const completed = completedMessages(events);
     expect(completed).toHaveLength(1);
     expect(completed[0]!.text).toBe('Hello world');
+  });
+});
+
+function assistantEnd(extra: Record<string, unknown> = {}): unknown {
+  return {
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      content: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+      ...extra,
+    },
+  };
+}
+
+describe('pi assistant message_end provider failures (#54)', () => {
+  it('falls back to errorMessage when there is no transport diagnostic', () => {
+    const events = feed([
+      assistantEnd({
+        provider: 'openai-codex',
+        model: 'gpt-5.6-sol',
+        stopReason: 'error',
+        errorMessage: 'Not Found',
+      }),
+      { type: 'agent_settled' },
+    ]);
+    expect(events).toContainEqual({
+      type: 'session.error',
+      message: 'pi: openai-codex/gpt-5.6-sol request failed: Not Found',
+      fatal: false,
+    });
+    expect(events.filter((e) => e.type === 'turn.completed')).toEqual([
+      { type: 'turn.completed', turnId: 'turn_1', stopReason: 'error' },
+    ]);
+  });
+
+  it('does not leak diagnostic stacks or details into session.error', () => {
+    const events = replay('provider-error');
+    const error = events.find((e) => e.type === 'session.error');
+    expect(error).toEqual({
+      type: 'session.error',
+      message: 'pi: openai-codex/gpt-5.6-sol request failed: WebSocket error',
+      fatal: false,
+    });
+    expect(JSON.stringify(error)).not.toMatch(/extractWebSocketError|requestBytes|sk-|Bearer /i);
+  });
+
+  it('keeps a successful empty assistant turn as end_turn', () => {
+    const events = feed([assistantEnd(), { type: 'agent_settled' }]);
+    expect(events.some((e) => e.type === 'session.error')).toBe(false);
+    expect(events.filter((e) => e.type === 'turn.completed')).toEqual([
+      { type: 'turn.completed', turnId: 'turn_1', stopReason: 'end_turn' },
+    ]);
   });
 });
