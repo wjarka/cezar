@@ -1,0 +1,243 @@
+# Shared harness parity test matrix
+
+> Issue: #68 · Depends on: `2026-07-14-cockpit-ui-redesign.md` (protocol v2 and its backend-parity requirement)
+
+## TLDR
+
+`ui-parity.test.ts` pins one thing: every mapper emits every v2 UI capability. Everything else a
+runner owes cezar — session lifecycle, provider-failure surfacing, `sendMessage`, ask routing, park
+declarations — is asserted per runner, ad hoc, in four unrelated test files. Nine recent fixes
+(#2, #3, #4, #5, #6, #46, #48, #53, #54) each repaired a failure mode that no shared contract
+covered, so the next one repeats on the next backend.
+
+This spec adds a second executable matrix beside the first: one criterion catalog, two tiers, four
+backends, and an exemption table the test itself validates. Adding a runner becomes "make your mock
+answer the shared scenario catalog and pass every row".
+
+## Resolved assumptions
+
+| # | Question | Applied default | Why | Confirm? |
+|---|---|---|---|---|
+| Q1 | Where do rows assert? | Two tiers: the `AgentRunner`/`AgentSession` seam, and a real `RunManager` run. | `ask.requested` is emitted by the RUNNER for codex and opencode, and by `workflows/run.ts` for claude and pi. Groups 1, 3 and 6 are only uniform above the seam; a seam-only matrix would exempt half the backends on exactly the rows the recent fixes were about. | confirmed by owner |
+| Q2 | A cell a backend cannot satisfy? | A declared `PARITY_EXEMPTIONS` entry carrying a reason, asserted INVERTED so a stale exemption fails. | An `it.skip` is invisible; an inverted assertion is a ratchet. AC #6 needs exemptions to be data the suite validates, not a comment. | confirmed by owner |
+| Q3 | What transport drives a row? | Each backend's real runner class against its own existing mock binary, selected by the `CEZ_*_BIN` var it already reads. | A test-owned fake transport would be a second wire-shape source of truth, drifting from the mocks. `AGENT_PROTOCOL.md` §7 names that drift as PR #443's root cause. | ok |
+| Q4 | Shared scenario names, or shared markers? | Shared NAMES; the adapter maps each to that backend's own `mock:` spelling. | Renaming `mock:turn-failed` or `mock:auth-error` would churn passing runner tests for no gain, and the existing markers are already wire-faithful. | ok |
+| Q5 | New env var for the matrix? | None. | The four mock selectors (`CEZ_CLAUDE_BIN`, `CEZ_CODEX_BIN`, `CEZ_OPENCODE_BIN`, `CEZ_PI_BIN`) already exist and are documented. Zero-config: never trade a working default for a knob. | ok |
+
+## Problem Statement
+
+The runner seam has one hard, executable rule and it covers one axis. `AGENT_PROTOCOL.md` §6 demands
+that every v2 UI capability is emitted by every backend, and `ui-parity.test.ts` asserts exactly that
+over the golden fixtures' expected output. Nothing asserts the rest of the contract in
+`agent-runner.ts`.
+
+The consequence is visible in the fix history. Every one of these was found in production, on one
+backend, after the same class of bug had already been fixed on another:
+
+| Group | Issues | The failure mode |
+|---|---|---|
+| 1. Provider / auth failure surfacing | #53 (opencode), #54 (pi) | A runtime provider rejection parked the run as "Needs You" instead of failing it. |
+| 2. Turn / session liveness | #4 (opencode) | undici's 300s headers timeout ended a healthy long turn; the runner took turn-end from an HTTP response instead of the backend's own idle signal. |
+| 3. Native ask / question bridge | #6 (opencode) | The native question tool never became an `ask.requested` card. |
+| 4. Sub-agent / child session binding | #5 (opencode), #600 (codex) | A child session's `turn/completed` ended the PARENT turn. |
+| 5. Text coalescing / message boundaries | #2, #3 (pi) | One v1 `text` per token, so a trailing `CEZ:ASK` marker never matched its regex. |
+| 6. Monitoring / wake / auto-continue | #46, #48 (claude) | A park declaration was missed, or produced overlapping wakes. |
+| 7. Baseline `AgentSession` contract | — | Never asserted uniformly at all. |
+
+Groups 1, 3 and 6 share a structural property that decides this spec's shape: **their uniform
+behavior does not exist at the seam.** `ask.requested` comes from the runner in
+`codex-app-server-runner.ts:416` and `opencode-server-runner.ts:743`, and from `workflows/run.ts:145`
+for claude and pi. Whether a provider failure fails the run or parks it is decided in
+`workflows/run.ts`, not in the runner. A seam-only matrix would have to exempt claude and pi, or
+codex and opencode, on precisely the rows the last nine fixes were about.
+
+## Research
+
+The mechanism this spec needs already exists and is unused as a contract. Every backend ships a mock
+binary that the runner selects from an env var it already reads, and each mock is driven by
+`mock:<scenario>` markers found in the prompt text:
+
+| Backend | Mock binary | Selector | Scenarios today |
+|---|---|---|---|
+| claude | `packages/cezar/scripts/mock-claude.mjs` | `CEZ_CLAUDE_BIN`, or `CEZ_DRY_RUN=1` | `done`, `monitoring`, `ask`, `ask-bad`, `ask-invalid`, `ask-near`, `refs`, `slow`, `auth-error`, `limit`, `md`, `subagents`, `schedule-wakeup` |
+| codex | `packages/cezar/src/core/__fixtures__/codex/mock-codex-app-server.mjs` | `CEZ_CODEX_BIN` | `turn-failed`, `subagent-activity`, `child-turn`, `native-codex-ask` |
+| opencode | `packages/cezar/src/core/__fixtures__/opencode/mock-opencode-serve.mjs` | `CEZ_OPENCODE_BIN` | none — one hard-coded turn |
+| pi | `packages/cezar/scripts/mock-pi-rpc.mjs` | `CEZ_PI_BIN`, or `CEZ_DRY_RUN=1` | `monitoring`, `backend-resume`, `backend-resume-text` |
+
+`workflows/run.test.ts` already proves the second tier is reachable offline: its #565 suite points
+`CEZ_CODEX_BIN` at the codex mock, inits a temp git repo, and drives a real `RunManager` run to a
+parked state. The matrix generalizes that one suite across four backends instead of inventing a
+mechanism.
+
+The scenario markers are also, usefully, already wire-faithful — they were written alongside the
+golden fixtures and cross-checked against the real CLIs, which is the standard `AGENT_PROTOCOL.md` §7
+demands and the standard the new scenarios must meet.
+
+## Proposed Solution
+
+Three artifacts, plus docs.
+
+### 1. `packages/cezar/src/core/harness-parity.testkit.ts`
+
+The shared declaration. `*.testkit.ts` is the repo's existing suffix for test helpers that are
+typechecked but excluded from `dist` (`packages/cezar/tsconfig.json`'s `exclude`), so the matrix's
+scaffolding never reaches the published tarball.
+
+It exports:
+
+- `SCENARIOS` — the shared scenario-name catalog. A name, not a marker.
+- `HARNESS_ADAPTERS: Record<RunnerId, HarnessAdapter>` — per backend, the env var and mock path that
+  make it offline, plus a scenario-name → prompt-text map.
+- `PARITY_EXEMPTIONS: ReadonlyArray<{ criterion: string; backend: RunnerId; reason: string }>`.
+- `driveSeam()` — start a real session against the mock, collect v1 `AgentEvent[]`, v2 `UiEvent[]`
+  and the settled `AgentRunResult`.
+- `driveRun()` — a real `RunManager` run in a temp git repo, returning the final `RunRecord` plus the
+  observed status transitions and v2 events.
+
+### 2. `packages/cezar/src/core/harness-parity.test.ts`
+
+The matrix. One file, looping `RUNNER_IDS × CRITERIA` the way `ui-parity.test.ts` loops `BACKENDS` —
+which is what makes "one shared matrix names each criterion once for every harness" literally true of
+the source.
+
+### 3. Mock-binary extensions
+
+Each mock grows the scenarios it does not answer yet, in its own real wire shape.
+
+### Docs
+
+`AGENT_PROTOCOL.md` gains a section for this matrix directly after the §6 UI-parity rule, each
+cross-referencing the other, and §9's new-runner checklist gains a harness-parity item. `AGENTS.md`'s
+"Agent runners / backends" routing row points at both.
+
+## Architecture
+
+### Scenario names are shared; spellings are not
+
+The matrix names a scenario once. The adapter maps it to whatever that backend's mock already calls
+it:
+
+```ts
+claude:   { 'provider-error': 'mock:auth-error',      'ask': 'mock:ask' }
+codex:    { 'provider-error': 'mock:turn-failed',     'ask': 'mock:native-codex-ask' }
+opencode: { 'provider-error': 'mock:provider-error',  'ask': 'mock:ask' }
+pi:       { 'provider-error': 'mock:provider-error',  'ask': 'mock:ask' }
+```
+
+This is the whole reason the change lands without churning four passing test files: no existing
+marker is renamed, and the criterion catalog stays free of backend vocabulary.
+
+The catalog:
+
+| Scenario | The mock must | Rows it serves |
+|---|---|---|
+| `baseline` | one text, one tool call and result, usage, then the backend's terminal turn signal | the seam contract rows, R1 |
+| `hold` | delay the terminal turn signal ~250 ms AFTER the last content event | S2 |
+| `split-text` | stream the reply as three or more token-sized deltas, ending with a trailing `CEZ:MONITORING` | S8, R5 |
+| `provider-error` | a runtime provider rejection in the backend's native error shape | S7, R2 |
+| `ask` | an ask — native where the wire has one, a `CEZ:ASK` marker otherwise | R3 |
+| `ask-bad` | a malformed ask, and then still end the turn | R4 |
+| `subagent` | child work attributed to a parent, and a child terminal signal | S9 |
+
+`baseline` is every mock's existing default turn, so it costs nothing. A second turn needs no
+scenario either: all four mocks already loop on their transport, so `sendMessage` reuses `baseline`.
+
+### Tier 1 — seam rows
+
+Driven by `driveSeam()`: the real runner class, a real child process, the real mock.
+
+| Row | Scenario | Asserts | Group |
+|---|---|---|---|
+| S1 | `baseline` | exactly one v1 `done`, and it is the last event | 7 |
+| S2 | `hold` | the turn ends on the backend's own terminal signal, after the last content event; exactly one `turn.completed` | 2 |
+| S3 | `baseline` | a v1 `session` event carries a non-empty backend session id | 7 |
+| S4 | `baseline` | v1 `token-usage` above zero AND a v2 `usage.updated` | 7 |
+| S5 | `baseline` ×2 | `sendMessage` returns true while `open`, and a second turn completes | 7 |
+| S6 | `baseline` | `interrupt()` settles `result` with no v1 `error` and no `turn.completed` carrying `stopReason: 'error'` | 7 |
+| S7 | `provider-error` | a v1 `error` with a non-empty message AND a v2 `session.error`; no clean `end_turn` | 1 |
+| S8 | `split-text` | the deltas coalesce into ONE v1 `text` holding the whole string, with the trailing marker intact under `/CEZ:MONITORING\s*$/` | 5, 6 |
+| S9 | `subagent` | the parent turn ends exactly once, after the child's content — a child terminal signal never ends the parent | 4 |
+| S10 | `baseline` | `session.pid` is a number while the session is open | 7 |
+
+S8 is group 5 and group 6 in one row on purpose. #2's real damage was not split text as such — it was
+that a cezar marker assembled across deltas stopped matching its anchored regex (`CEZ:ASK` there,
+`CEZ:MONITORING` here; the two are the same integrity property, and `CEZ:MONITORING` is the one R5
+also needs). Splitting that into two scenarios would let a backend pass the coalescing row while
+still dropping the marker. One scenario keeps the cause and the symptom in the same cell.
+
+### Tier 2 — run rows
+
+Driven by `driveRun()`: a real `RunManager` run in a temp git repo, the shape
+`workflows/run.test.ts` already uses.
+
+| Row | Scenario | Asserts | Group |
+|---|---|---|---|
+| R1 | `baseline` | the run reaches a terminal non-attention status (`review` or `done`), never `waiting` | 7 |
+| R2 | `provider-error` | the run reaches `failed`, and `waiting` is never observed on the way | 1 |
+| R3 | `ask` | status `waiting`, and exactly one `ask.requested` carrying at least one question | 3 |
+| R4 | `ask-bad` | the run reaches a terminal status and emits no `ask.requested` | 3 |
+| R5 | `split-text` | status `running` with `activity: 'monitoring'` — not `waiting` | 6 |
+
+R2 and R5 are the two rows that would have caught #53, #54 and #48 on any backend rather than on the
+one that shipped the bug.
+
+### Exemptions are data the suite validates
+
+```ts
+{
+  criterion: 'S9',
+  backend: 'pi',
+  reason: 'pi task tools are plain tool calls; the RPC has no child session to end a parent turn',
+}
+```
+
+Three rules, each executable:
+
+1. **Inverted assertion.** An exempt cell still produces a named test, which asserts the capability
+   really is absent. A mock that later grows it fails its own exemption, forcing the entry's removal.
+   A stale exemption cannot sit green.
+2. **Total coverage.** A guard test asserts every `(criterion, backend)` pair is either a live row or
+   an exemption. A new id in `RUNNER_IDS` therefore fails the suite until every row is addressed,
+   which is AC #6 made mechanical rather than procedural.
+3. **No skips.** `it.skip` and `it.todo` are never used in this file; a guard test reads the file's
+   own source to keep it that way. An exemption must be visible in the table, with a reason.
+
+### Error handling and offline guarantee
+
+Every row runs offline. Each adapter sets its backend's `CEZ_*_BIN` to the mock path and restores the
+prior value afterwards, following the existing save/restore shape in `pi-runner.test.ts` and
+`workflows/run.test.ts`. No row reaches a real vendor CLI, no row needs a login, and no row opens a
+network socket beyond loopback (the opencode mock's own HTTP server). `CEZ_DRY_RUN` is not the
+mechanism — an explicit per-backend bin keeps a row's transport visible in the adapter rather than
+implied by a global.
+
+### Testing
+
+The matrix IS the test. Two things about it need their own proof:
+
+- **The guard tests must fail for the right reason.** Adding a fake fifth id to a local copy of
+  `RUNNER_IDS` must fail the total-coverage guard; removing a real exemption's target capability from
+  a mock must fail the inverted assertion. Both are checked by hand during implementation, per
+  AGENTS.md's "prove the regression test fails without the fix".
+- **Each new mock scenario must be wire-faithful.** Every addition cites the fixture or runner test it
+  was derived from, as `AGENT_PROTOCOL.md` §7 requires. A scenario invented from assumption is the
+  #443 failure repeating inside the very suite meant to prevent it.
+
+## Cost
+
+Tier 2 is 5 rows × 4 backends = 20 short child-process runs, roughly 30–60 s added to `npm test`.
+That keeps the suite inside AGENTS.md's "no server, no browser" fast-gate rule — a spawned mock CLI is
+what `workflows/run.test.ts` already does — but it is the change's whole runtime cost and it is
+deliberate: the owner chose the orchestrator tier precisely because groups 1, 3 and 6 are not uniform
+below it.
+
+## Out of Scope
+
+- **cursor-cli and grok-cli runners.** File separate issues once the matrix lands; this spec only
+  makes the target they must hit explicit.
+- **Live network E2E against real vendor CLIs in default CI.** Mock children only.
+- **Changing `ui-parity.test.ts`.** It keeps mapper parity unchanged; it gains a pointer comment to
+  its sibling and nothing else.
+- **A new `CEZ_*` env var.** The four mock selectors already exist.
+- **Reworking the four per-runner test files.** They keep their backend-specific cases; the matrix
+  adds the shared floor beneath them rather than absorbing them.
