@@ -55,4 +55,6 @@ expect(await screen.findByRole('alertdialog')).toHaveTextContent(/active session
 - Browser checked at 360x640 and 1280x800 in light/dark. Select, Pull, and dialog actions measure 44px high. Cancel and Enter activation work; reduced-motion preference respected. Dialog close restores focus to Pull (regression test).
 - No artwork: a repository operation uses existing controls and an icon.
 
-Final local verification: typecheck passed; 6492 Vitest tests; 97 core/workflow-script tests; production build and tarball gate passed; 21 package tests. Browser confirmed focus returns to Switch & pull after Escape.
+Final local verification: typecheck passed; 6493 Vitest tests; 97 core/workflow-script tests; production build and tarball gate passed; 21 package tests. Browser confirmed focus returns to Switch & pull after Escape.
+
+PR review regression: Git 2.55 pull.autoStash overrides merge/rebase settings. The invocation now uses `git pull --no-autostash`; the new real-Git test failed before this fix on Git 2.55. All 33 pull tests pass on both Git 2.43 and 2.55.

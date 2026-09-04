@@ -44,6 +44,8 @@ describe('project checkout pull', () => {
     git(root, 'config', 'user.name', 'Test');
     git(root, 'config', 'user.email', 'test@example.com');
     git(root, 'config', 'commit.gpgsign', 'false');
+    // Pin fixture policy across Git versions; the rebase-specific test overrides this.
+    git(root, 'config', 'pull.rebase', 'false');
     initialHead = git(root, 'rev-parse', 'HEAD');
     writeFileSync(join(source, 'remote.txt'), 'remote change\n');
     git(source, 'add', '.');
@@ -153,6 +155,19 @@ describe('project checkout pull', () => {
   it.each(['', 'a'.repeat(201)])('rejects empty or oversized branch names at the boundary', async (branch) => {
     expect((await post({ branch })).status).toBe(400);
     expect(git(root, 'rev-parse', 'HEAD')).toBe(initialHead);
+  });
+  it('never auto-stashes confirmed edits even when pull.autoStash overrides rebase config', async () => {
+    // pull.autoStash takes precedence on newer Git. Rebase requires a clean index when
+    // auto-stash is disabled, so this must refuse and preserve both HEAD and the edit.
+    git(root, 'config', 'pull.rebase', 'true');
+    git(root, 'config', 'pull.autoStash', 'true');
+    git(root, 'config', 'rebase.autoStash', 'true');
+    writeFileSync(join(root, 'base.txt'), 'my work\n');
+    const res = await post({ confirm: true });
+    expect(res.status).toBe(409);
+    expect(git(root, 'rev-parse', 'HEAD')).toBe(initialHead);
+    expect(readFileSync(join(root, 'base.txt'), 'utf8')).toBe('my work\n');
+    expect(git(root, 'stash', 'list')).toBe('');
   });
   it('reports both risks together before switching a dirty checkout', async () => {
     git(root, 'checkout', '-b', 'feature');

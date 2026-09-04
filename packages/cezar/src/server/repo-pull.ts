@@ -87,9 +87,9 @@ export async function pullRepoCheckout(
       return { ok: true, value: { branch, pulled: true, summary: 'Dry run: pull simulated.' } };
     }
     if (branch !== current) await git(root, ['switch', '--no-guess', branch]);
-    // Respect the repo's merge/ff/rebase policy, but never let configured auto-stash hide or
-    // move the very edits the user just acknowledged. No force or reset fallback.
-    const output = await git(root, ['-c', 'rebase.autoStash=false', '-c', 'merge.autoStash=false', 'pull']);
+    // The CLI flag overrides pull.autoStash as well as merge/rebase.autoStash on every
+    // supported Git version. Preserve the repo's merge/ff/rebase policy, never stash edits.
+    const output = await git(root, ['pull', '--no-autostash']);
     return { ok: true, value: { branch, pulled: true, summary: output.split(/[\r\n]+/)[0]?.slice(0, 500) || 'Pull completed.' } };
   } catch (error) {
     return { ok: false, value: { error: reason(error) } };
