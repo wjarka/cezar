@@ -134,6 +134,22 @@ const server = createServer((req, res) => {
         setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
         return;
       }
+      if (body.includes('mock:done')) {
+        // Declares the task complete so the run reaches cezar's review gate; a
+        // markerless turn-end correctly parks as `waiting` instead (harness
+        // parity R1).
+        send({ type: 'message.updated', properties: { info: info({}) } });
+        send({ type: 'message.part.updated', properties: { part: {
+          id: 'prt_mock_done', messageID: MESSAGE_ID, sessionID: SESSION_ID, type: 'text',
+          text: 'parity done: the task is complete\n\nCEZ:DONE',
+          time: { start: 1760000000500, end: 1760000000600 },
+        } } });
+        send({ type: 'message.updated', properties: { info: info({
+          cost: 0.0001, tokens: { input: 20, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+        }) } });
+        setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
+        return;
+      }
       if (body.includes('mock:hold')) {
         // The response above is the ack (this is the #4 wire: `prompt_async`
         // resolves immediately, the turn arrives over SSE afterwards). Holding

@@ -74,6 +74,15 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       errorMessage: 'Not Found',
     } });
     send({ type: 'agent_settled' });
+  } else if (command.type === 'prompt' && command.message.includes('mock:done')) {
+    // Declares the task complete so the run reaches cezar's review gate; a
+    // markerless turn-end correctly parks as `waiting` instead (harness
+    // parity R1).
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    sendText(['parity done: the task is complete\n\nCEZ:DONE']);
+    sendTurnEnd();
   } else if (command.type === 'prompt' && command.message.includes('mock:hold')) {
     // The `response` below is the ack. Holding the content AND the terminal
     // quartet behind it is what makes harness parity S2 meaningful: a runner

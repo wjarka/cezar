@@ -18,14 +18,19 @@
  *    and a backend with no dry-run short-circuit is driven the same way as one
  *    that has it.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import type { AgentEvent, AgentRunResult, AgentSession, RunnerId } from './agent-runner.ts';
 import { createRunner } from './runner-factory.ts';
 import type { UiEvent } from './ui-events.ts';
+import { RunStore, type RunRecord } from '../runs/store.ts';
+import { RunManager } from '../workflows/run.ts';
+import type { WorkflowDef } from '../workflows/types.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +40,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * | Scenario | The mock must |
  * | --- | --- |
  * | `baseline` | one text, one tool call and result, usage, then its terminal turn signal |
+ * | `done` | the same, with a trailing `CEZ:DONE` so the run reaches its review gate |
  * | `hold` | delay the terminal turn signal after the last content event |
  * | `split-text` | stream the reply in pieces, ending with a trailing `CEZ:MONITORING` |
  * | `provider-error` | a runtime provider rejection in its native error shape |
@@ -44,6 +50,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  */
 export const SCENARIOS = [
   'baseline',
+  'done',
   'hold',
   'split-text',
   'provider-error',
@@ -82,6 +89,7 @@ export const HARNESS_ADAPTERS: Readonly<Record<RunnerId, HarnessAdapter>> = {
     mockBin: CLAUDE_MOCK,
     scenarios: {
       baseline: BASELINE_PROMPT,
+      done: 'mock:done',
       hold: 'mock:hold',
       'split-text': 'mock:split-text',
       // Claude's mock has carried an auth-rejection branch since #430.
@@ -97,6 +105,7 @@ export const HARNESS_ADAPTERS: Readonly<Record<RunnerId, HarnessAdapter>> = {
     mockBin: CODEX_MOCK,
     scenarios: {
       baseline: BASELINE_PROMPT,
+      done: 'mock:done',
       hold: 'mock:hold',
       'split-text': 'mock:split-text',
       // `turn/failed` with an error message IS codex's provider-rejection shape.
@@ -113,6 +122,7 @@ export const HARNESS_ADAPTERS: Readonly<Record<RunnerId, HarnessAdapter>> = {
     mockBin: OPENCODE_MOCK,
     scenarios: {
       baseline: BASELINE_PROMPT,
+      done: 'mock:done',
       hold: 'mock:hold',
       'split-text': 'mock:split-text',
       'provider-error': 'mock:provider-error',
@@ -127,6 +137,7 @@ export const HARNESS_ADAPTERS: Readonly<Record<RunnerId, HarnessAdapter>> = {
     mockBin: PI_MOCK,
     scenarios: {
       baseline: BASELINE_PROMPT,
+      done: 'mock:done',
       hold: 'mock:hold',
       'split-text': 'mock:split-text',
       'provider-error': 'mock:provider-error',
@@ -293,4 +304,116 @@ export async function driveSeam(
     if (savedDry !== undefined) process.env.CEZ_DRY_RUN = savedDry;
     rmSync(cwd, { force: true, recursive: true });
   }
+}
+
+// ---- the run tier ---------------------------------------------------------
+
+const execFileAsync = promisify(execFile);
+const GIT_IDENTITY = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
+
+/** The zero-config single-agent-step workflow, which is what a quick task runs. */
+const SINGLE_STEP: WorkflowDef = {
+  name: 'quick-task',
+  source: 'built-in',
+  steps: [{ id: 'task', name: 'Task', prompt: '{{task}}' }],
+};
+
+export interface RunObservation {
+  /** Every status the run passed through, in order. A row can then assert a
+   *  state was never ENTERED, not merely that it is not the final one — which
+   *  is what #53/#54 need, since the bug was a transient park. */
+  readonly statuses: readonly string[];
+  readonly record: RunRecord | undefined;
+  /** The run's persisted NDJSON, parsed — v1 and v2 events in one file, the
+   *  same bytes SSE replays to the cockpit. */
+  readonly events: readonly Record<string, unknown>[];
+}
+
+/**
+ * Drive one backend through a real `RunManager` run against its offline mock.
+ *
+ * The run tier exists because three of the failure-mode groups are only uniform
+ * ABOVE the seam: `ask.requested` comes from the runner for codex and opencode
+ * and from `workflows/run.ts` for claude and pi, and whether a provider failure
+ * fails the run or parks it is decided in the orchestrator either way.
+ *
+ * Modelled on the #565 suite in `workflows/run.test.ts`: a temp git repo, a
+ * store, a manager, and the built-in single-step workflow with `worktree: false`.
+ */
+export async function driveRun(
+  backend: RunnerId,
+  scenario: ScenarioName,
+  settled: (record: RunRecord | undefined) => boolean,
+  timeoutMs = 30_000,
+): Promise<RunObservation> {
+  const adapter = HARNESS_ADAPTERS[backend];
+  const savedBin = process.env[adapter.binEnv];
+  const savedDry = process.env.CEZ_DRY_RUN;
+  process.env[adapter.binEnv] = adapter.mockBin;
+  delete process.env.CEZ_DRY_RUN;
+  const repoRoot = mkdtempSync(join(tmpdir(), `cez-parity-run-${backend}-`));
+  let store: RunStore | undefined;
+  let manager: RunManager | undefined;
+  let runId: string | undefined;
+  try {
+    await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
+    await execFileAsync('git', ['add', '-A'], { cwd: repoRoot });
+    await execFileAsync('git', [...GIT_IDENTITY, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
+    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    manager = new RunManager(store, repoRoot);
+    const started = manager.startRun(SINGLE_STEP, {
+      task: promptFor(backend, scenario),
+      runner: backend,
+      worktree: false,
+    });
+    runId = started.id;
+    const statuses: string[] = [];
+    const record = () => store?.getRun(started.id);
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const current = record();
+      const status = current?.status;
+      if (status !== undefined && statuses.at(-1) !== status) statuses.push(status);
+      if (settled(current)) break;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `driveRun(${backend}, ${scenario}) never settled; statuses seen: ${statuses.join(' -> ')}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    store.flush();
+    return { statuses, record: record(), events: readRunEvents(repoRoot, started.id) };
+  } finally {
+    if (runId && manager) manager.cancel(runId);
+    store?.flush();
+    if (savedBin === undefined) delete process.env[adapter.binEnv];
+    else process.env[adapter.binEnv] = savedBin;
+    if (savedDry !== undefined) process.env.CEZ_DRY_RUN = savedDry;
+    rmSync(repoRoot, { force: true, recursive: true });
+  }
+}
+
+/** Parse a run's append-only NDJSON, skipping bad lines the way readers must. */
+function readRunEvents(repoRoot: string, runId: string): Record<string, unknown>[] {
+  let raw: string;
+  try {
+    raw = readFileSync(join(repoRoot, '.ai/cezar/runs', `${runId}.ndjson`), 'utf8');
+  } catch {
+    return [];
+  }
+  const events: Record<string, unknown>[] = [];
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed !== null && typeof parsed === 'object') {
+        events.push(parsed as Record<string, unknown>);
+      }
+    } catch {
+      // A reader skips a bad line; so does this.
+    }
+  }
+  return events;
 }

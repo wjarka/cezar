@@ -25,12 +25,14 @@ import { describe, expect, it } from 'vitest';
 import { RUNNER_IDS, type AgentEvent, type RunnerId } from './agent-runner.ts';
 import { appendTurnText } from '../workflows/run.ts';
 import {
+  driveRun,
   driveSeam,
   lastIndexWhere,
   textEvents,
   exemptionFor,
   HARNESS_ADAPTERS,
   PARITY_EXEMPTIONS,
+  type RunObservation,
   type ScenarioName,
   type SeamObservation,
   waitFor,
@@ -194,6 +196,67 @@ const SEAM_CRITERIA: readonly SeamCriterion[] = [
   },
 ];
 
+/** One row of the run tier. `settled` says when the run has reached the state
+ *  the row is about, so a row waits for its own condition rather than a sleep. */
+interface RunCriterion {
+  readonly id: string;
+  readonly name: string;
+  readonly scenario: ScenarioName;
+  readonly settled: (record: RunObservation['record']) => boolean;
+  readonly assert: (obs: RunObservation) => void;
+}
+
+const TERMINAL: readonly string[] = ['review', 'done', 'failed', 'cancelled'];
+
+const askEvents = (obs: RunObservation) =>
+  obs.events.filter((e) => e.type === 'ask.requested');
+
+const RUN_CRITERIA: readonly RunCriterion[] = [
+  {
+    // Group 7 — a run whose agent DECLARED completion reaches cezar's review
+    // gate, which is a non-attention terminal state (cezar never auto-merges).
+    // The scenario has to declare it: a markerless turn-end parks as `waiting`
+    // on every backend, and that is correct behaviour, not a defect.
+    id: 'R1',
+    name: 'R1 takes a declared-complete run to its review gate',
+    scenario: 'done',
+    settled: (record) => TERMINAL.includes(record?.status ?? ''),
+    assert: (obs) => {
+      expect(['review', 'done']).toContain(obs.record?.status);
+      expect(obs.statuses).not.toContain('waiting');
+    },
+  },
+  {
+    // Group 1 / #53, #54 — the row that would have caught both on whichever
+    // backend shipped the bug second. `statuses` rather than the final status:
+    // the defect was a park, and a run that parked and later failed anyway is
+    // still the bug the user saw.
+    id: 'R2',
+    name: 'R2 fails the run on a provider failure instead of parking it as Needs You',
+    scenario: 'provider-error',
+    // `waiting` settles too, so the defect fails on the assertion below rather
+    // than as an opaque timeout: a parked run is the bug, not a slow one.
+    settled: (record) => TERMINAL.includes(record?.status ?? '') || record?.status === 'waiting',
+    assert: (obs) => {
+      expect(obs.record?.status).toBe('failed');
+      expect(obs.statuses).not.toContain('waiting');
+    },
+  },
+  {
+    // Group 6 / #48 — a declared park is a non-attention state. The same
+    // scenario S8 asserts survives the seam: the cause below, the effect here.
+    id: 'R5',
+    name: 'R5 parks a declared monitoring turn as running/monitoring, not waiting',
+    scenario: 'split-text',
+    settled: (record) => record?.activity === 'monitoring' || record?.status === 'waiting',
+    assert: (obs) => {
+      expect(obs.record?.activity).toBe('monitoring');
+      expect(obs.record?.status).toBe('running');
+      expect(obs.statuses).not.toContain('waiting');
+    },
+  },
+];
+
 /** Criteria driven through `whileOpen` rather than one settled observation. */
 const CONTROL_CRITERIA = [
   { id: 'S5', scenario: 'baseline' },
@@ -287,13 +350,44 @@ describe('harness parity — seam tier, session control', () => {
   }
 });
 
+describe('harness parity — run tier', () => {
+  for (const backend of RUNNER_IDS) {
+    for (const criterion of RUN_CRITERIA) {
+      const exempt = exemptionFor(criterion.id, backend);
+      if (exempt?.kind === 'scenario-unconstructible') {
+        it(`${backend} is exempt from ${criterion.id} — ${exempt.reason}`, () => {
+          expect(HARNESS_ADAPTERS[backend].scenarios[criterion.scenario]).toBeUndefined();
+        });
+        continue;
+      }
+      it(
+        exempt
+          ? `${backend} is exempt from ${criterion.id} — ${exempt.reason}`
+          : `${backend} ${criterion.name}`,
+        async () => {
+          const obs = await driveRun(backend, criterion.scenario, criterion.settled);
+          if (exempt) expect(() => criterion.assert(obs)).toThrow();
+          else criterion.assert(obs);
+        },
+        60_000,
+      );
+    }
+  }
+});
+
 describe('harness parity — the matrix itself', () => {
-  const allIds = [...SEAM_CRITERIA.map((c) => c.id), ...CONTROL_CRITERIA.map((c) => c.id)];
+  const allIds = [
+    ...SEAM_CRITERIA.map((c) => c.id),
+    ...CONTROL_CRITERIA.map((c) => c.id),
+    ...RUN_CRITERIA.map((c) => c.id),
+  ];
   const scenarioOf = (id: string): ScenarioName => {
     const seam = SEAM_CRITERIA.find((c) => c.id === id);
     if (seam) return seam.scenario;
     const control = CONTROL_CRITERIA.find((c) => c.id === id);
     if (control) return control.scenario;
+    const runRow = RUN_CRITERIA.find((c) => c.id === id);
+    if (runRow) return runRow.scenario;
     throw new Error(`unknown criterion id "${id}"`);
   };
 

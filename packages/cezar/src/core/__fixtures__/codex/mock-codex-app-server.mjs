@@ -73,6 +73,19 @@ rl.on('line', (line) => {
       emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
       return;
     }
+    if (turnText.includes('mock:done')) {
+      // A turn that DECLARES the task complete, so the run reaches cezar's
+      // review gate instead of parking for the user. A markerless turn-end
+      // correctly parks as `waiting`, which is why harness parity R1 needs
+      // this scenario rather than the baseline one.
+      const full = 'parity done: the task is complete\n\nCEZ:DONE';
+      emit({ method: 'item/started', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_d1', text: '' } } });
+      emit({ method: 'item/agentMessage/delta', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_d1', delta: full } });
+      emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_d1', text: full } } });
+      emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
+      emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      return;
+    }
     if (turnText.includes('mock:hold')) {
       // The `turn/start` response and `turn/started` above are the ack. Holding
       // the content AND `turn/completed` behind it is what makes harness parity
