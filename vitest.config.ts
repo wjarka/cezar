@@ -10,6 +10,14 @@ export default defineConfig({
     // The suites are still being grown; a project that currently matches no file must not
     // fail the validation gate. Root-level only — vitest rejects this inside a project.
     passWithNoTests: true,
+    // Pin reporters so Actions gets exactly one `github-actions` job summary for the whole
+    // multi-project run (#62). Leaving this unset lets Vitest auto-append the reporter when
+    // GITHUB_ACTIONS=true; an explicit list replaces the defaults and documents the
+    // single-summary contract. Local runs keep `default` only.
+    reporters:
+      process.env.GITHUB_ACTIONS === 'true'
+        ? ['default', ['github-actions', { jobSummary: { title: 'Vitest Test Report' } }]]
+        : ['default'],
     projects: [
       './packages/cezar/vitest.config.ts',
       './packages/api-client/vitest.config.ts',

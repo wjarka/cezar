@@ -24,9 +24,12 @@ two authentication methods (#33):
 - **Stable releases** (`latest`) are **owner-driven and manual**: a maintainer
   runs the [`Release`](../.github/workflows/release.yml) workflow from the
   Actions tab (`workflow_dispatch`) and picks the version bump. CI never moves
-  `latest` — a push to `main` publishes nothing. The job authenticates with
-  **npm trusted publishing** (OIDC): no `NPM_TOKEN` in the job, provenance
-  attached automatically.
+  `latest` — a push to `main` publishes nothing. The workflow splits **Verify**
+  (typecheck, tests, build) from **Release** (publish): a registry blip after a
+  green suite fails only the publish job, so the Vitest Actions report stays a
+  single green summary (#62). The publish job authenticates with **npm trusted
+  publishing** (OIDC): no `NPM_TOKEN` in the job, provenance attached
+  automatically.
 - **Previews** are **CI-driven**: the `publish-snapshot` job in
   [`ci.yml`](../.github/workflows/ci.yml) publishes a snapshot of every package
   after a fully green `verify` run — on `develop` pushes and same-repo PRs only.
