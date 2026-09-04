@@ -2523,7 +2523,8 @@ export class RunManager {
         appendHandoffHeartbeat(this.dataDir, runId, `step "${stepId}" complete — status=done`);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // Keep the provider failure that triggered teardown, even if teardown rejects.
+      const message = sessionError ?? (err instanceof Error ? err.message : String(err));
       sink.sessionEnded('error', message);
       this.store.updateStep(runId, stepId, { status: 'failed', error: message, finishedAt: finishedAt() });
       appendHandoffHeartbeat(this.dataDir, runId, `step "${stepId}" complete — status=failed`);
@@ -3117,7 +3118,8 @@ export class RunManager {
       this.store.updateStep(runId, step.id, { tokensUsed: startTokens + result.tokensUsed });
       return null;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // Keep the provider failure that triggered teardown, even if teardown rejects.
+      const message = sessionError ?? (err instanceof Error ? err.message : String(err));
       sink.sessionEnded('error', message); // alongside v1's fatal `error`
       return message;
     } finally {

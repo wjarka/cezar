@@ -12,6 +12,7 @@ import type {
   ContentBlock,
   SessionOptions,
 } from './agent-runner.js';
+import { isSignalTerminationExit } from './agent-runner.js';
 import { buildChildEnv } from './agent-env.js';
 import { readNdjson } from './ndjson.js';
 import { createPiUiState, mapPiRpcMessage, piProviderErrorMessage, piTurnStarted } from './pi-ui-mapper.js';
@@ -64,6 +65,7 @@ export class PiRunner implements AgentRunner {
     });
     let open = true;
     let timedOut = false;
+    let terminatedByCezar = false;
     let autoEndTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let piUi = createPiUiState();
@@ -150,13 +152,18 @@ export class PiRunner implements AgentRunner {
       if (!open) return;
       open = false;
       child.stdin.end();
-      killTimer = setTimeout(() => child.exitCode == null && child.kill('SIGTERM'), KILL_GRACE_MS);
+      killTimer = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        terminatedByCezar = true;
+        child.kill('SIGTERM');
+      }, KILL_GRACE_MS);
       killTimer.unref?.();
     };
     const interrupt = (): void => {
       if (!open) return;
       write({ type: 'abort' });
       open = false;
+      terminatedByCezar = true;
       child.kill('SIGTERM');
     };
 
@@ -281,7 +288,13 @@ export class PiRunner implements AgentRunner {
         onEvent?.({ type: 'done' });
         return { text: textChunks.join('\n').trim(), toolCalls, tokensUsed, sessionId };
       }
-      if (exitCode !== 0 && exitCode !== null) {
+      // A signal we sent is teardown, not a second agent failure (#73).
+      if (terminatedByCezar && isSignalTerminationExit(exitCode)) {
+        onEvent?.({
+          type: 'note',
+          message: `pi CLI did not exit on its own after close; terminated by cezar (code ${exitCode})`,
+        });
+      } else if (exitCode !== 0 && exitCode !== null) {
         const detail = stderr.join('').trim().split('\n').slice(-3).join(' | ');
         const message = `pi CLI exited with code ${exitCode}${detail ? ` — ${detail}` : ''}`;
         onEvent?.({ type: 'error', message });
