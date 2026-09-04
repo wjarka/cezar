@@ -2467,3 +2467,25 @@ it('keeps legacy metadata usable with disabled personal filtering and no board p
   expect(screen.queryByRole('combobox', { name: 'Project board' })).toBeNull()
   expect(rows()).toHaveLength(2)
 })
+
+it.each([[], undefined])('does not restore a stale board selection after refresh returns projects=%j', async projects => {
+  const boardData = { ...GITHUB, projects: [{ id: 'P1', title: 'Delivery', url: 'https://github.com/users/acme/projects/1' }], issues: [
+    { ...ISSUE_142, projectIds: ['P1'] }, { ...ISSUE_139, projectIds: [] },
+  ] }
+  let refreshes = 0
+  stubFetch({
+    'GET /api/v1/github?limit=1000': () => jsonResponse(boardData),
+    'GET /api/v1/github?limit=1000&refresh=1': () => jsonResponse(++refreshes === 1 ? { ...boardData, projects } : boardData),
+  })
+  renderAt('/github')
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Project board' }), { target: { value: 'P1' } })
+  expect(rows()).toHaveLength(1)
+  fireEvent.click(screen.getByTitle('Refresh from GitHub'))
+  await waitFor(() => expect(rows()).toHaveLength(2))
+  expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull()
+  await waitFor(() => expect((screen.getByTitle('Refresh from GitHub') as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByTitle('Refresh from GitHub'))
+  const picker = await screen.findByRole('combobox', { name: 'Project board' })
+  expect((picker as HTMLSelectElement).value).toBe('')
+  expect(rows()).toHaveLength(2)
+})

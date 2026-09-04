@@ -259,6 +259,9 @@ export function GithubRoute({ view, changes = false }: { view: GithubView; chang
   const [projectFilter, setProjectFilter] = useState('')
   // A refresh can revoke metadata or unlink a board. Do not leave an invisible active filter.
   const activeProject = gh?.projects?.some(p => p.id === projectFilter) ? projectFilter : ''
+  useEffect(() => {
+    if (gh && projectFilter && !activeProject) setProjectFilter('')
+  }, [gh, projectFilter, activeProject])
   const clearFilters = () => {
     setQuery('')
     setLabelFilter([])
