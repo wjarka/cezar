@@ -103,6 +103,7 @@ describe('monitoring schedule', () => {
   it('shows the exact persisted deadline in a time element', () => {
     stubFetch()
     renderHeader(run('running', { activity: 'monitoring', monitoringWakeAt: '2026-07-25T10:15:00.000Z' }))
+    expect(screen.getByText('monitoring')).not.toBeNull()
     const time = screen.getByText(/2026/).closest('time')
     expect(time?.getAttribute('datetime')).toBe('2026-07-25T10:15:00.000Z')
     expect(screen.getByText(/Next automatic check/)).not.toBeNull()

@@ -131,7 +131,7 @@ describe('the review gate on the thread', () => {
     expect(document.querySelector('[data-slot="review-panel"]')).toBeNull()
   })
 
-  it('shows the working spinner ONLY while the run is running (the live heartbeat)', () => {
+  it('shows the working spinner only during a live running turn, not while monitoring', () => {
     stubFetch()
     const { rerenderWithProviders } = renderWithProviders(
       <ThreadView run={run('running')} thread={reduceThread([])} />,
@@ -139,6 +139,15 @@ describe('the review gate on the thread', () => {
     const working = () => document.querySelector('[data-slot="working-indicator"]')
     expect(working()).not.toBeNull()
     expect(working()?.textContent).toContain('Working')
+    expect(screen.getByRole('status', { name: 'Working' })).toBeTruthy()
+
+    rerenderWithProviders(
+      <ThreadView run={run('running', { activity: 'monitoring' })} thread={reduceThread([])} />,
+    )
+    expect(working(), 'no spinner while monitoring').toBeNull()
+    expect(screen.queryByRole('status', { name: 'Working' })).toBeNull()
+
+    rerenderWithProviders(<ThreadView run={run('running')} thread={reduceThread([])} />)
     expect(screen.getByRole('status', { name: 'Working' })).toBeTruthy()
 
     // waiting hands off to the dock's reply hint, queued to the placeholder, closed states to
