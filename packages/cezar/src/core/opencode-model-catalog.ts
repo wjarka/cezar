@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { effortLevelSchema, type EffortLevel } from '@open-mercato/cezar-contract';
 import { trackChildExit } from './agent-runner.ts';
 import { buildChildEnv } from './agent-env.ts';
 import type { ModelOption } from './runner-model-catalog.ts';
@@ -47,53 +48,74 @@ export async function discoverOpencodeModels(
   options: OpencodeModelDiscoveryOptions,
 ): Promise<ModelOption[]> {
   const bin = resolveOpencodeExecutable(options.bin);
-  const args = ['models'] as const;
-  const child = (options.spawn ?? spawnOpencode)(bin, args, options.cwd);
-  const kill = teardown(child);
-
-  const timeoutMs = options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  let timeout: NodeJS.Timeout | undefined;
-
+  const spawn = options.spawn ?? spawnOpencode;
+  const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS);
   try {
-    return await new Promise<ModelOption[]>((resolve, reject) => {
-      let stdout = '';
-      let overflowed = false;
+    return await runOpencodeProbe(bin, ['models', '--verbose'], options.cwd, spawn, deadline);
+  } catch (error) {
+    if (!(error instanceof OpencodeNonzeroExitError) || Date.now() >= deadline) throw error;
+    // Older OpenCode releases know `models` but not `--verbose`. Preserve their existing model
+    // picker and let every model use the cockpit's metadata fallback.
+    return runOpencodeProbe(bin, ['models'], options.cwd, spawn, deadline);
+  }
+}
 
-      const fail = (message: string) => {
-        reject(new Error(message));
+class OpencodeNonzeroExitError extends Error {}
+
+async function runOpencodeProbe(
+  bin: string,
+  args: readonly string[],
+  cwd: string,
+  spawn: NonNullable<OpencodeModelDiscoveryOptions['spawn']>,
+  deadline: number,
+): Promise<ModelOption[]> {
+  const child = spawn(bin, args, cwd);
+  const kill = teardown(child);
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const result = new Promise<ModelOption[]>((resolve, reject) => {
+      let stdout = '';
+      let settled = false;
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
         kill();
       };
 
-      timeout = setTimeout(() => fail('OpenCode model discovery timed out'), timeoutMs);
+      timeout = setTimeout(
+        () => fail(new Error('OpenCode model discovery timed out')),
+        Math.max(1, deadline - Date.now()),
+      );
       timeout.unref?.();
-
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
-        if (overflowed) return;
+        if (settled) return;
         stdout += chunk;
         if (stdout.length > MAX_OUTPUT_CHARS) {
-          overflowed = true;
-          fail('OpenCode model discovery exceeded the output limit');
+          fail(new Error('OpenCode model discovery exceeded the output limit'));
         }
       });
-      // Drained but ignored: OpenCode prints provider warnings here, and an unread pipe would
-      // eventually stall the child.
       child.stderr.resume();
-
-      child.once('error', () => fail('OpenCode model discovery child failed'));
+      child.stdin.once('error', () => fail(new Error('OpenCode model discovery stdin failed')));
+      child.once('error', () => fail(new Error('OpenCode model discovery child failed')));
       child.once('close', (code) => {
-        if (overflowed) return;
+        if (settled) return;
         if (code !== 0) {
-          fail(`OpenCode model discovery child exited (${code ?? 'unknown'})`);
+          fail(new OpencodeNonzeroExitError(`OpenCode model discovery child exited (${code ?? 'unknown'})`));
           return;
         }
         try {
-          resolve(parseOpencodeModels(stdout));
+          const models = parseOpencodeModels(stdout);
+          settled = true;
+          resolve(models);
         } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
+          fail(error instanceof Error ? error : new Error(String(error)));
         }
       });
     });
+    child.stdin.end();
+    return await result;
   } finally {
     if (timeout) clearTimeout(timeout);
     kill();
@@ -101,12 +123,12 @@ export async function discoverOpencodeModels(
 }
 
 /**
- * Turn `opencode models` output into picker options, preserving OpenCode's own order.
+ * Turn `opencode models --verbose` output into picker options, preserving OpenCode's own order.
+ * Each model id starts a segment whose remaining lines are its JSON metadata. Invalid metadata is
+ * isolated to that model: the id remains usable and the cockpit applies its per-model fallback.
  *
- * Empty output is a legitimate answer (no provider configured yet) and yields no models, so the
- * picker shows `auto` alone. Output that contains lines but NO recognizable id is treated as a
- * failure instead: the CLI said something we cannot read, and reporting "unavailable" is more
- * honest than an empty catalog that looks like "you have no models".
+ * Empty output is a legitimate answer (no provider configured yet) and yields no models. Output
+ * that contains lines but NO recognizable id is treated as a failure instead.
  */
 export function parseOpencodeModels(stdout: string): ModelOption[] {
   const lines = stdout
@@ -115,14 +137,38 @@ export function parseOpencodeModels(stdout: string): ModelOption[] {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
-  const models: ModelOption[] = [];
-  const ids = new Set<string>();
+  const segments: Array<{ id: string; metadata: string[] }> = [];
+  let current: { id: string; metadata: string[] } | undefined;
   for (const line of lines) {
-    if (!MODEL_LINE_RE.test(line) || ids.has(line)) continue;
+    if (MODEL_LINE_RE.test(line)) {
+      current = { id: line, metadata: [] };
+      segments.push(current);
+    } else if (current) {
+      current.metadata.push(line);
+    }
+  }
+
+  const models: ModelOption[] = [];
+  const indexes = new Map<string, number>();
+  for (const segment of segments) {
+    const effortLevels = effortLevelsFromMetadata(segment.metadata);
+    const existingIndex = indexes.get(segment.id);
+    if (existingIndex !== undefined) {
+      const existing = models[existingIndex]!;
+      if (!existing.effortLevels && effortLevels) {
+        models[existingIndex] = { ...existing, effortLevels };
+      }
+      continue;
+    }
     if (models.length >= MAX_MODELS) throw new Error('OpenCode model discovery exceeded the size limit');
-    ids.add(line);
-    const provider = line.slice(0, line.indexOf('/'));
-    models.push({ id: line, label: line, description: `via ${provider}` });
+    const provider = segment.id.slice(0, segment.id.indexOf('/'));
+    indexes.set(segment.id, models.length);
+    models.push({
+      id: segment.id,
+      label: segment.id,
+      description: `via ${provider}`,
+      ...(effortLevels ? { effortLevels } : {}),
+    });
   }
 
   if (models.length === 0 && lines.length > 0) {
@@ -131,19 +177,37 @@ export function parseOpencodeModels(stdout: string): ModelOption[] {
   return models;
 }
 
+function effortLevelsFromMetadata(lines: readonly string[]): EffortLevel[] | undefined {
+  if (lines.length === 0) return undefined;
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(lines.join('\n'));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(metadata) || !isRecord(metadata.variants)) return undefined;
+
+  const levels: EffortLevel[] = [];
+  for (const name of Object.keys(metadata.variants)) {
+    const parsed = effortLevelSchema.safeParse(name);
+    if (parsed.success && !levels.includes(parsed.data)) levels.push(parsed.data);
+  }
+  return levels.length > 0 ? levels : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function spawnOpencode(
   bin: string,
   args: readonly string[],
   cwd: string,
 ): ChildProcessWithoutNullStreams {
-  const child = nodeSpawn(bin, [...args], {
+  return nodeSpawn(bin, [...args], {
     cwd,
     env: buildChildEnv({ backend: 'opencode' }),
   });
-  // Nothing is ever written to it, and an open stdin is what makes a CLI that expects a TTY
-  // sit and wait instead of printing its list.
-  child.stdin.end();
-  return child;
 }
 
 /**

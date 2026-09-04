@@ -1,9 +1,11 @@
+import type { EffortLevel } from '@open-mercato/cezar-contract';
 import type { RunnerId } from './agent-runner.ts';
 
 export interface ModelOption {
   id: string;
   label: string;
   description: string;
+  effortLevels?: EffortLevel[];
 }
 
 export type ModelCatalogSource = 'live' | 'cache' | 'unavailable';

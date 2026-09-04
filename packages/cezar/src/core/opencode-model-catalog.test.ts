@@ -61,9 +61,20 @@ function discover(
   script: (fake: ReturnType<typeof fakeChild>) => void,
   options: { timeoutMs?: number } = {},
 ): Promise<Array<{ id: string; label: string; description: string }>> {
-  const fake = fakeChild();
-  const promise = discoverOpencodeModels({ cwd: '/repo', spawn: () => fake.child, ...options });
-  queueMicrotask(() => script(fake));
+  const primary = fakeChild();
+  let calls = 0;
+  const promise = discoverOpencodeModels({
+    cwd: '/repo',
+    spawn: () => {
+      calls += 1;
+      if (calls === 1) return primary.child;
+      const fallback = fakeChild();
+      queueMicrotask(() => fallback.close(1));
+      return fallback.child;
+    },
+    ...options,
+  });
+  queueMicrotask(() => script(primary));
   return promise;
 }
 
@@ -74,19 +85,76 @@ const LISTING = [
   'openai/gpt-5.5-fast',
 ].join('\n');
 
+const VERBOSE_LISTING = [
+  'openai/gpt-5.6-sol',
+  JSON.stringify({
+    id: 'gpt-5.6-sol',
+    providerID: 'openai',
+    variants: {
+      none: { reasoningEffort: 'none' },
+      low: { reasoningEffort: 'low' },
+      medium: { reasoningEffort: 'medium' },
+      high: { reasoningEffort: 'high' },
+      xhigh: { reasoningEffort: 'xhigh' },
+      max: { reasoningEffort: 'max' },
+      turbo: { reasoningEffort: 'turbo' },
+    },
+  }, null, 2),
+  'zai-coding-plan/glm-5.3',
+  JSON.stringify({
+    id: 'glm-5.3',
+    providerID: 'zai-coding-plan',
+    variants: { low: {}, high: {}, max: {} },
+  }, null, 2),
+].join('\n');
+
 describe('discoverOpencodeModels', () => {
-  it('lists what the host CLI printed, in its own order', async () => {
+  it('lists verbose models and their recognized variants in host order', async () => {
     await expect(
       discover((fake) => {
-        fake.say(`${LISTING}\n`);
+        fake.say(`${VERBOSE_LISTING}\n`);
         fake.close(0);
       }),
     ).resolves.toEqual([
-      { id: 'anthropic/claude-sonnet-5', label: 'anthropic/claude-sonnet-5', description: 'via anthropic' },
-      { id: 'openai/gpt-5.3-codex-spark', label: 'openai/gpt-5.3-codex-spark', description: 'via openai' },
-      { id: 'openai/gpt-5.4', label: 'openai/gpt-5.4', description: 'via openai' },
-      { id: 'openai/gpt-5.5-fast', label: 'openai/gpt-5.5-fast', description: 'via openai' },
+      {
+        id: 'openai/gpt-5.6-sol',
+        label: 'openai/gpt-5.6-sol',
+        description: 'via openai',
+        effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      },
+      {
+        id: 'zai-coding-plan/glm-5.3',
+        label: 'zai-coding-plan/glm-5.3',
+        description: 'via zai-coding-plan',
+        effortLevels: ['low', 'high', 'max'],
+      },
     ]);
+  });
+
+  it('retries the plain model list when an older CLI rejects --verbose', async () => {
+    const verbose = fakeChild();
+    const plain = fakeChild();
+    const spawned: string[][] = [];
+    const promise = discoverOpencodeModels({
+      cwd: '/repo',
+      spawn: (_bin, args) => {
+        spawned.push([...args]);
+        const child = spawned.length === 1 ? verbose : plain;
+        queueMicrotask(() => {
+          if (spawned.length === 1) verbose.close(1);
+          else {
+            plain.say('openai/gpt-5.4\n');
+            plain.close(0);
+          }
+        });
+        return child.child;
+      },
+    });
+
+    await expect(promise).resolves.toEqual([
+      { id: 'openai/gpt-5.4', label: 'openai/gpt-5.4', description: 'via openai' },
+    ]);
+    expect(spawned).toEqual([['models', '--verbose'], ['models']]);
   });
 
   it('passes the runner binary override through', async () => {
@@ -105,7 +173,7 @@ describe('discoverOpencodeModels', () => {
       fake.close(0);
     });
     await promise;
-    expect(spawned).toEqual({ bin: '/opt/opencode', args: ['models'], cwd: '/repo' });
+    expect(spawned).toEqual({ bin: '/opt/opencode', args: ['models', '--verbose'], cwd: '/repo' });
   });
 
   it('treats an empty listing as "no models configured", not a failure', async () => {
@@ -196,6 +264,66 @@ describe('discoverOpencodeModels', () => {
 });
 
 describe('parseOpencodeModels', () => {
+  it('maps recognized verbose variants and preserves sparse backend order', () => {
+    expect(parseOpencodeModels(VERBOSE_LISTING)).toEqual([
+      {
+        id: 'openai/gpt-5.6-sol',
+        label: 'openai/gpt-5.6-sol',
+        description: 'via openai',
+        effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      },
+      {
+        id: 'zai-coding-plan/glm-5.3',
+        label: 'zai-coding-plan/glm-5.3',
+        description: 'via zai-coding-plan',
+        effortLevels: ['low', 'high', 'max'],
+      },
+    ]);
+  });
+
+  it('isolates missing, empty, unknown, and malformed metadata per model', () => {
+    const listing = [
+      'openai/missing',
+      'openai/empty',
+      JSON.stringify({ variants: {} }),
+      'openai/unknown',
+      JSON.stringify({ variants: { minimal: {}, turbo: {} } }),
+      'openai/malformed',
+      '{ "variants": { "high": {}',
+      'openai/partial',
+      JSON.stringify({ variants: { low: {}, turbo: {}, max: {} } }),
+    ].join('\n');
+
+    expect(parseOpencodeModels(listing)).toEqual([
+      { id: 'openai/missing', label: 'openai/missing', description: 'via openai' },
+      { id: 'openai/empty', label: 'openai/empty', description: 'via openai' },
+      { id: 'openai/unknown', label: 'openai/unknown', description: 'via openai' },
+      { id: 'openai/malformed', label: 'openai/malformed', description: 'via openai' },
+      {
+        id: 'openai/partial',
+        label: 'openai/partial',
+        description: 'via openai',
+        effortLevels: ['low', 'max'],
+      },
+    ]);
+  });
+
+  it('upgrades an incomplete duplicate with the first later usable metadata', () => {
+    expect(parseOpencodeModels([
+      'openai/gpt-5.4',
+      '{ malformed',
+      'openai/gpt-5.4',
+      JSON.stringify({ variants: { high: {}, xhigh: {} } }),
+      'openai/gpt-5.4',
+      JSON.stringify({ variants: { max: {} } }),
+    ].join('\n'))).toEqual([{
+      id: 'openai/gpt-5.4',
+      label: 'openai/gpt-5.4',
+      description: 'via openai',
+      effortLevels: ['high', 'xhigh'],
+    }]);
+  });
+
   it('drops duplicates, blank lines and anything that is not a provider/model id', () => {
     expect(
       parseOpencodeModels(

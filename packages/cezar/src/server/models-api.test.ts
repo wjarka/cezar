@@ -96,13 +96,22 @@ describe('workspace model catalog API', () => {
     const server = app(
       async () => [],
       async () => [],
-      async () => [{ id: 'xai/grok-4.6', label: 'grok-4.6', description: 'via xai' }],
+      async () => [{
+        id: 'xai/grok-4.6',
+        label: 'grok-4.6',
+        description: 'via xai',
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+      }],
     );
     const response = await apiRequest(server, '/api/v1/models?runner=pi');
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       runner: 'pi',
-      models: [{ id: 'xai/grok-4.6', description: 'via xai' }],
+      models: [{
+        id: 'xai/grok-4.6',
+        description: 'via xai',
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+      }],
       source: 'live',
     });
   });

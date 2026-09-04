@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import type { BackendCheck, Skill, WorkflowDef } from '@open-mercato/cezar-api-client'
+import type {
+  BackendCheck,
+  RunnerModelCatalogResponse,
+  Skill,
+  WorkflowDef,
+} from '@open-mercato/cezar-api-client'
 
 import {
   buildAutomationTask,
   availableRunners,
   buildCreateRunBody,
+  effortOptionsForModel,
   MODELS_BY_RUNNER,
   modelConflictsWithRunner,
   modelsForRunner,
   modelCatalogStatus,
   pushRecentSource,
+  resolveEffort,
   resolveModel,
   resolveRunner,
   resolveSource,
@@ -159,6 +166,61 @@ describe('model option resolution', () => {
     expect(resolveModel(null, 'codex', defaults)).toBe('not-a-preset')
     // No preset for the runner → auto, exactly as before.
     expect(resolveModel(null, 'opencode', defaults)).toBe('')
+  })
+})
+
+describe('effort option resolution (#55)', () => {
+  const catalog: RunnerModelCatalogResponse = {
+    runner: 'opencode',
+    models: [
+      {
+        id: 'openai/gpt-5.4',
+        label: 'GPT 5.4',
+        description: '',
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+      },
+      {
+        id: 'zai/glm-5.3',
+        label: 'GLM 5.3',
+        description: '',
+        effortLevels: ['max', 'low', 'high'],
+      },
+      { id: 'openai/legacy', label: 'Legacy', description: '' },
+      { id: 'openai/empty', label: 'Empty', description: '', effortLevels: [] },
+    ],
+    source: 'live',
+    stale: false,
+  }
+  const full = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+
+  it('offers auto plus exactly the selected model levels in backend order', () => {
+    expect(effortOptionsForModel('opencode', 'zai/glm-5.3', catalog).map((option) => option.value))
+      .toEqual(['', 'max', 'low', 'high'])
+    expect(effortOptionsForModel('opencode', 'openai/gpt-5.4', catalog).map((option) => option.value))
+      .toEqual(['', 'low', 'medium', 'high', 'xhigh'])
+  })
+
+  it('resets an unsupported effort to auto and keeps a supported effort', () => {
+    const options = effortOptionsForModel('opencode', 'zai/glm-5.3', catalog)
+    expect(resolveEffort('medium', options)).toBe('')
+    expect(resolveEffort('high', options)).toBe('high')
+    expect(resolveEffort(null, options)).toBe('')
+  })
+
+  it('falls back per model for static runners, old metadata, custom ids, and missing catalogs', () => {
+    expect(effortOptionsForModel('claude', 'opus').map((option) => option.value)).toEqual(full)
+    expect(effortOptionsForModel('codex', 'gpt-future').map((option) => option.value)).toEqual(full)
+    expect(effortOptionsForModel('opencode', 'openai/legacy', catalog).map((option) => option.value)).toEqual(full)
+    expect(effortOptionsForModel('opencode', 'openai/empty', catalog).map((option) => option.value)).toEqual(full)
+    expect(effortOptionsForModel('opencode', 'provider/custom', catalog).map((option) => option.value)).toEqual(full)
+    expect(effortOptionsForModel('pi', 'xai/grok')).toHaveLength(full.length)
+  })
+
+  it('does not let one model metadata entry affect another', () => {
+    expect(effortOptionsForModel('opencode', 'zai/glm-5.3', catalog).map((option) => option.value))
+      .not.toContain('medium')
+    expect(effortOptionsForModel('opencode', 'openai/legacy', catalog).map((option) => option.value))
+      .toContain('medium')
   })
 })
 

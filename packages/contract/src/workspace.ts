@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { effortLevelSchema } from './effort.ts';
 import { type Runner, runnerSchema } from './health.ts';
 
 /**
@@ -484,6 +485,7 @@ export const runnerModelOptionSchema = z.object({
   id: z.string(),
   label: z.string(),
   description: z.string(),
+  effortLevels: z.array(effortLevelSchema).optional(),
 });
 export type RunnerModelOption = z.infer<typeof runnerModelOptionSchema>;
 

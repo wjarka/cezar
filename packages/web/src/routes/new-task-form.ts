@@ -90,8 +90,7 @@ export const MODELS_BY_RUNNER: Record<Runner, readonly ModelPreset[]> = {
 }
 
 /** Shared effort catalog (#45). `value: ''` is auto — omitted on the wire, harness default.
- *  Every runner currently honors the full set (claude `--effort`, pi `--thinking`,
- *  codex `turn/start` effort, opencode `variant`). Hide a row here if a harness drops it. */
+ * Model discovery may select an ordered subset; missing metadata keeps this complete fallback. */
 export const EFFORT_OPTIONS = [
   { value: '', label: 'auto', desc: 'Harness default' },
   { value: 'low', label: 'low', desc: 'Less reasoning, faster replies' },
@@ -100,6 +99,40 @@ export const EFFORT_OPTIONS = [
   { value: 'xhigh', label: 'xhigh', desc: 'Extra-high reasoning' },
   { value: 'max', label: 'max', desc: 'Maximum reasoning' },
 ] as const
+
+export type EffortOption = (typeof EFFORT_OPTIONS)[number]
+
+/** `auto` plus this model's discovered levels, or the complete backward-compatible fallback. */
+export function effortOptionsForModel(
+  runner: Runner,
+  model: string,
+  catalog?: RunnerModelCatalogResponse,
+): readonly EffortOption[] {
+  const levels = runnerDiscoversModels(runner)
+    ? catalog?.models.find((entry) => entry.id === model)?.effortLevels
+    : undefined
+  if (!levels?.length) return EFFORT_OPTIONS
+
+  const options: EffortOption[] = [EFFORT_OPTIONS[0]]
+  const seen = new Set<string>()
+  for (const level of levels) {
+    if (seen.has(level)) continue
+    const option = EFFORT_OPTIONS.find((candidate) => candidate.value === level)
+    if (!option) continue
+    seen.add(level)
+    options.push(option)
+  }
+  return options.length > 1 ? options : EFFORT_OPTIONS
+}
+
+/** Resolve stale or inherited effort through the same options the picker displays. */
+export function resolveEffort(
+  effort: string | null | undefined,
+  options: readonly EffortOption[],
+): string {
+  const value = effort ?? ''
+  return options.some((option) => option.value === value) ? value : ''
+}
 
 /** Runners that pick with the canonical `provider/model` convention and span every provider the
  *  host has configured, so an id they list is never EXCLUSIVE to them: both pi and OpenCode

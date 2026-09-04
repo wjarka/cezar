@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
 import type { Runner } from '@open-mercato/cezar-api-client'
+import { EFFORT_OPTIONS } from '@/routes/new-task-form'
 
 import { engineBody, engineRunBody, type EnginePick, type ResolvedEngine, useResolvedEngine } from './engine-pills'
 
@@ -19,6 +20,7 @@ const resolved = (over: Partial<ResolvedEngine> = {}): ResolvedEngine => ({
   runnerExplicit: false,
   model: '',
   effort: '',
+  effortOptions: EFFORT_OPTIONS,
   runners: ['claude'],
   defaultRunner: 'claude',
   canRun: true,

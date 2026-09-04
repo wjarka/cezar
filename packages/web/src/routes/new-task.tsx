@@ -91,11 +91,12 @@ import {
 } from './new-task-draft'
 import {
   buildCreateRunBody,
-  EFFORT_OPTIONS,
+  effortOptionsForModel,
   modelsForRunner,
   modelCatalogStatus,
   pushRecentSource,
   QUICK_TASK,
+  resolveEffort,
   resolveModel,
   resolveRunner,
   resolveSource,
@@ -231,7 +232,8 @@ export function NewTaskRoute() {
   const model = runner === null
     ? ''
     : resolveModel(modelsLocked ? null : draft.model, runner, config.data?.defaultModels, catalog.data)
-  const effort = modelsLocked ? '' : (draft.effort ?? '')
+  const effortOptions = effortOptionsForModel(displayRunner, model, catalog.data)
+  const effort = modelsLocked ? '' : resolveEffort(draft.effort, effortOptions)
   // Agent accounts (spec 2026-07-29-agent-profiles). These are rows of the RUNNER pill rather than
   // a pill of their own — `claude · Default` / `claude · Klaudiusz` / `codex` — so what will run is
   // readable at a glance instead of assembled from two controls. An agent with a single login stays
@@ -655,14 +657,20 @@ export function NewTaskRoute() {
                     ? 'Model selection is locked to native coding-agent settings.'
                     : undefined
                 }
-                onPick={(next) => update({ model: next })}
+                onPick={(next) => {
+                  const nextOptions = effortOptionsForModel(displayRunner, next, catalog.data)
+                  update({
+                    model: next,
+                    effort: draft.effort === null ? null : resolveEffort(draft.effort, nextOptions),
+                  })
+                }}
                 options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
                 status={modelCatalogStatus(displayRunner, catalog.data, catalog.isError)}
               />
               <PickerPill
                 slot="effort-pill"
                 ariaLabel="Effort"
-                label={EFFORT_OPTIONS.find((option) => option.value === effort)?.label ?? 'auto'}
+                label={effortOptions.find((option) => option.value === effort)?.label ?? 'auto'}
                 value={effort}
                 disabled={!providersReady}
                 readOnly={modelsLocked}
@@ -672,7 +680,7 @@ export function NewTaskRoute() {
                     : undefined
                 }
                 onPick={(next) => update({ effort: next })}
-                options={EFFORT_OPTIONS.map((option) => ({
+                options={effortOptions.map((option) => ({
                   value: option.value,
                   label: option.label,
                   desc: option.desc,

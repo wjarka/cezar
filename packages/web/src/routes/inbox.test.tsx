@@ -425,6 +425,41 @@ describe('Run — backend selection (#401)', () => {
     await waitFor(() => expect(startBody(sent, 't1')).toEqual({ runner: 'codex' }))
   })
 
+  it('shared engine pills filter effort and drop a pick unsupported by the next model', async () => {
+    const sent = stubFetch({
+      'GET /api/v1/models?runner=codex': () => jsonResponse({
+        runner: 'codex',
+        models: [
+          { id: 'gpt-wide', label: 'gpt-wide', description: '', effortLevels: ['high', 'xhigh'] },
+          { id: 'gpt-lean', label: 'gpt-lean', description: '', effortLevels: ['low'] },
+        ],
+        source: 'live',
+        stale: false,
+      }),
+    }, TODOS, ['claude', 'codex'])
+    renderInbox()
+
+    await waitFor(() => expect(cards()).toHaveLength(2))
+    await waitFor(() => expect(cards()[0]!.querySelector('[data-slot="runner-pill"]')).not.toBeNull())
+    await pick(cards()[0]!, 'runner-pill', 'codex')
+    await pick(cards()[0]!, 'model-pill', 'gpt-wide')
+    await pick(cards()[0]!, 'effort-pill', 'xhigh')
+    expect(cards()[0]!.querySelector('[data-slot="effort-pill"]')?.textContent).toContain('xhigh')
+
+    await pick(cards()[0]!, 'model-pill', 'gpt-lean')
+    await waitFor(() =>
+      expect(cards()[0]!.querySelector('[data-slot="effort-pill"]')?.textContent).toContain('auto'),
+    )
+    fireEvent.pointerDown(cards()[0]!.querySelector('[data-slot="effort-pill"]')!)
+    const effortRows = await screen.findAllByRole('menuitemradio')
+    expect(effortRows).toHaveLength(2)
+    expect(effortRows.some((option) => option.textContent?.includes('xhigh'))).toBe(false)
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    fireEvent.click(cards()[0]!.querySelector('[data-action="todo-run"]')!)
+    await waitFor(() => expect(startBody(sent, 't1')).toEqual({ runner: 'codex', model: 'gpt-lean' }))
+  })
+
   it('a model pick rides along with the runner', async () => {
     const sent = stubFetch({}, TODOS, ['claude', 'codex'])
     renderInbox()
