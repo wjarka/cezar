@@ -556,6 +556,34 @@ describe('host seams (R4: the /new hero)', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
+  it.each([false, true])('opts task text out of credential autofill (autoFocus=%s)', (autoFocus) => {
+    const { textarea } = renderComposer({ autoFocus })
+    expect(textarea.tagName).toBe('TEXTAREA')
+    expect(textarea.getAttribute('type')).not.toBe('password')
+    expect(textarea.getAttribute('autocomplete')).toBe('off')
+    expect(Array.from(textarea.labels ?? [], (label) => label.textContent)).toEqual([
+      'Reply to the agent',
+    ])
+    type(textarea, 'Investigate the failing build')
+    expect(textarea.value).toBe('Investigate the failing build')
+  })
+
+  it('associates each mounted composer with its own task label', () => {
+    stubSkillsFetch()
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <p>Enter a verification code</p>
+        <Composer onSubmit={vi.fn()} ariaLabel="Describe a task for the agent" />
+        <Composer onSubmit={vi.fn()} ariaLabel="Reply to the agent" />
+      </QueryClientProvider>,
+    )
+    const task = screen.getByRole('textbox', { name: 'Describe a task for the agent' }) as HTMLTextAreaElement
+    const reply = screen.getByRole('textbox', { name: 'Reply to the agent' }) as HTMLTextAreaElement
+    expect(task.id).not.toBe(reply.id)
+    expect(Array.from(task.labels ?? [], (label) => label.textContent)).toEqual(['Describe a task for the agent'])
+    expect(Array.from(reply.labels ?? [], (label) => label.textContent)).toEqual(['Reply to the agent'])
+  })
+
   it('without autoFocus the composer never steals focus', () => {
     const { textarea } = renderComposer()
     expect(document.activeElement).not.toBe(textarea)

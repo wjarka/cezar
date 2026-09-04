@@ -3,6 +3,7 @@ import { ArrowUpIcon, CheckIcon, MicIcon, PaperclipIcon, XIcon } from 'lucide-re
 import {
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -147,6 +148,7 @@ export function Composer({
   // Skills load on the FIRST `/` trigger and stay cached — not on every thread visit.
   const [skillsWanted, setSkillsWanted] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const pendingCaretRef = useRef<number | null>(null)
 
@@ -455,8 +457,13 @@ export function Composer({
             </div>
           ) : null}
 
+          {/* A real label keeps password managers from treating nearby page text as a
+              one-time-code prompt on client-side navigation (#71); aria-label alone doesn't. */}
+          <label htmlFor={textareaId} className="sr-only">{ariaLabel}</label>
           <textarea
             ref={textareaRef}
+            id={textareaId}
+            autoComplete="off"
             rows={2}
             value={text}
             disabled={disabled}
