@@ -142,3 +142,9 @@ it('identifies incomplete provider data rather than suggesting a permission chan
   const result = await fetchIssueProjects(async () => '{}', 'o', 'r', [1]);
   expect(result).toEqual({ projectsReason: 'Project board data is incomplete. Refresh to try again.' });
 });
+it.each(['API rate limit exceeded (HTTP 403)', 'Too Many Requests (HTTP 429)'])(
+  'does not suggest permission changes when GitHub returns %s', async message => {
+    const result = await fetchIssueProjects(async () => { throw new Error(message); }, 'o', 'r', [1]);
+    expect(result).toEqual({ projectsReason: expect.stringContaining('rate-limiting') });
+  },
+);

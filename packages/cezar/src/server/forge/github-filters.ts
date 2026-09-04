@@ -26,6 +26,9 @@ function assertGraphqlSuccess(raw: unknown): void {
 /** Classify provider errors without echoing subprocess commands or arbitrary stderr. */
 function projectFailureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
+  if (/rate.?limit|HTTP 429|Too Many Requests|abuse detection/i.test(message)) {
+    return 'GitHub is rate-limiting project board requests. Wait a few minutes, then refresh.';
+  }
   if (/read:project|INSUFFICIENT_SCOPES/i.test(message)) {
     return 'GitHub project read access is missing. Run gh auth refresh -s read:project, then refresh. If cezar uses GH_TOKEN or GITHUB_TOKEN, grant that token project read access instead.';
   }
