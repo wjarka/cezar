@@ -58,6 +58,21 @@ rl.on('line', (line) => {
     emit({ id: msg.id, result: { turn: { id: 'turn_mock_1' } } });
     emit({ method: 'turn/started', params: { turn: { id: 'turn_mock_1', status: 'inProgress', items: [] } } });
     const turnText = msg.params?.input?.map?.((part) => part.text ?? '').join('\n') ?? '';
+    if (turnText.includes('mock:split-text')) {
+      // Deltas that split the marker itself, then the authoritative snapshot on
+      // `item/completed` — codex's real streaming shape. A runner emitting one
+      // v1 `text` per delta tears `CEZ:MONITORING` into `CEZ:` + `MONITORING`,
+      // which is #2 on codex's wire (harness parity S8).
+      const full = 'parity split text\n\nCEZ:MONITORING';
+      emit({ method: 'item/started', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_sp1', text: '' } } });
+      for (const delta of ['parity split text\n\n', 'CEZ:', 'MONITORING']) {
+        emit({ method: 'item/agentMessage/delta', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_sp1', delta } });
+      }
+      emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_sp1', text: full } } });
+      emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
+      emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      return;
+    }
     if (turnText.includes('mock:hold')) {
       // The `turn/start` response and `turn/started` above are the ack. Holding
       // the content AND `turn/completed` behind it is what makes harness parity

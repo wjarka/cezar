@@ -62,6 +62,26 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ info: info({}), parts: [] }));
       // The raw body is enough to spot a `mock:` marker — the prompt text is
       // inside it whatever part shape the runner used to wrap it.
+      if (body.includes('mock:split-text')) {
+        // OpenCode streams a text part as successive GROWING snapshots of the
+        // same part id; only the final one carries `time.end`. A runner emitting
+        // one v1 `text` per snapshot publishes the torn `…CEZ:` prefix, which is
+        // #2 on opencode's wire (harness parity S8).
+        const full = 'parity split text\n\nCEZ:MONITORING';
+        send({ type: 'message.updated', properties: { info: info({}) } });
+        for (const upto of [17, 24, full.length]) {
+          send({ type: 'message.part.updated', properties: { part: {
+            id: 'prt_mock_split', messageID: MESSAGE_ID, sessionID: SESSION_ID, type: 'text',
+            text: full.slice(0, upto),
+            ...(upto === full.length ? { time: { start: 1760000000500, end: 1760000000600 } } : {}),
+          } } });
+        }
+        send({ type: 'message.updated', properties: { info: info({
+          cost: 0.0001, tokens: { input: 20, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+        }) } });
+        setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
+        return;
+      }
       if (body.includes('mock:hold')) {
         // The response above is the ack (this is the #4 wire: `prompt_async`
         // resolves immediately, the turn arrives over SSE afterwards). Holding

@@ -43,6 +43,16 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
         pendingMessageCount: 0,
       },
     });
+  } else if (command.type === 'prompt' && command.message.includes('mock:split-text')) {
+    // Pi streams one text_delta per token (#2's root cause), so the marker is
+    // split across deltas. Only a coalescer reassembles `CEZ:MONITORING`;
+    // one v1 `text` per delta joins them with a newline and the park is lost
+    // (harness parity S8).
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    sendText(['parity split text', '\n\n', 'CEZ:', 'MONITORING']);
+    sendTurnEnd();
   } else if (command.type === 'prompt' && command.message.includes('mock:hold')) {
     // The `response` below is the ack. Holding the content AND the terminal
     // quartet behind it is what makes harness parity S2 meaningful: a runner

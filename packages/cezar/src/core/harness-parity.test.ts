@@ -23,9 +23,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { RUNNER_IDS, type AgentEvent, type RunnerId } from './agent-runner.ts';
+import { appendTurnText } from '../workflows/run.ts';
 import {
   driveSeam,
   lastIndexWhere,
+  textEvents,
   exemptionFor,
   HARNESS_ADAPTERS,
   PARITY_EXEMPTIONS,
@@ -76,6 +78,35 @@ const SEAM_CRITERIA: readonly SeamCriterion[] = [
       expect(lastContent).toBeGreaterThanOrEqual(0);
       expect(v1.findIndex((e) => e.type === 'turn-end')).toBeGreaterThan(lastContent);
       expect(v2.filter((e) => e.type === 'turn.completed')).toHaveLength(1);
+    },
+  },
+  {
+    // Groups 5 and 6 / #2, #3 — one row on purpose. The damage was never split
+    // text as such: a cezar marker assembled across deltas stopped matching its
+    // anchored regex, because `appendTurnText` joins v1 `text` events with a
+    // newline. So `CEZ:` + `MONITORING` as two events becomes `CEZ:\nMONITORING`
+    // and the run parks as "needs you" instead of monitoring.
+    //
+    // Each mock streams the strongest split its own wire permits: codex, opencode
+    // and pi split INSIDE the marker (deltas, growing snapshots, tokens), which
+    // only a coalescer can reassemble; claude's stream-json has no deltas, so it
+    // sends the marker as its own whole assistant block — the multi-block reply
+    // that has to park correctly all the same.
+    id: 'S8',
+    name: 'S8 assembles split assistant text so a trailing marker still anchors',
+    scenario: 'split-text',
+    assert: ({ v1 }) => {
+      const texts = textEvents(v1);
+      // No single event may carry a TORN marker: that is the #2 defect exactly,
+      // and it survives the assembled-text check below when a stray later event
+      // happens to end the turn with an intact copy.
+      for (const text of texts) {
+        if (text.includes('CEZ:')) expect(text).toContain('CEZ:MONITORING');
+      }
+      const assembled = texts.reduce((acc, text) => appendTurnText(acc, text), '');
+      expect(assembled).toContain('parity split text');
+      // The exact test `workflows/run.ts` applies to decide a monitoring park.
+      expect(assembled.trimEnd()).toMatch(/CEZ:MONITORING$/);
     },
   },
   {
