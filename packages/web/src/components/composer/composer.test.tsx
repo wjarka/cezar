@@ -556,6 +556,15 @@ describe('host seams (R4: the /new hero)', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
+  it.each([false, true])('opts task text out of credential autofill (autoFocus=%s)', (autoFocus) => {
+    const { textarea } = renderComposer({ autoFocus })
+    expect(textarea.tagName).toBe('TEXTAREA')
+    expect(textarea.getAttribute('type')).not.toBe('password')
+    expect(textarea.getAttribute('autocomplete')).toBe('off')
+    type(textarea, 'Investigate the failing build')
+    expect(textarea.value).toBe('Investigate the failing build')
+  })
+
   it('without autoFocus the composer never steals focus', () => {
     const { textarea } = renderComposer()
     expect(document.activeElement).not.toBe(textarea)

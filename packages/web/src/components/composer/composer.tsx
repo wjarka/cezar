@@ -457,6 +457,7 @@ export function Composer({
 
           <textarea
             ref={textareaRef}
+            autoComplete="off"
             rows={2}
             value={text}
             disabled={disabled}
