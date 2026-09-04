@@ -115,3 +115,30 @@ it('starts discovery while the issue list is still loading', async () => {
   resolveNumbers([1]);
   expect(await pending).toEqual({ projects: [board], membership: { 1: ['P1'] } });
 });
+it.each(['rejected-command', 'graphql-errors'])(
+  'explains missing project scope from %s instead of suggesting repeated refreshes', async kind => {
+    const message = "Your token has not been granted the required scopes to execute this query. The 'projectsV2' field requires one of the following scopes: ['read:project'].";
+    const graphql = async () => {
+      if (kind === 'rejected-command') throw new Error(`gh: ${message}`);
+      return JSON.stringify({ errors: [{ type: 'INSUFFICIENT_SCOPES', message }] });
+    };
+    const result = await fetchIssueProjects(graphql, 'o', 'r', [1]);
+    expect(result).toEqual({ projectsReason: expect.stringContaining('gh auth refresh -s read:project') });
+  },
+);
+it('explains timeout separately from missing permissions', async () => {
+  const result = await fetchIssueProjects(async () => { throw Object.assign(new Error('Command failed'), { killed: true }); }, 'o', 'r', [1]);
+  expect(result).toEqual({ projectsReason: expect.stringContaining('timed out') });
+});
+it('does not expose arbitrary command error text in the cockpit', async () => {
+  const result = await fetchIssueProjects(async () => { throw new Error('unexpected private output'); }, 'o', 'r', [1]);
+  expect(result).toEqual({ projectsReason: 'Project boards unavailable. Refresh to try again.' });
+});
+it('explains denied project access without exposing the raw provider error', async () => {
+  const result = await fetchIssueProjects(async () => { throw new Error('gh: Resource not accessible by integration (HTTP 403)'); }, 'o', 'r', [1]);
+  expect(result).toEqual({ projectsReason: expect.stringContaining('Grant project read access') });
+});
+it('identifies incomplete provider data rather than suggesting a permission change', async () => {
+  const result = await fetchIssueProjects(async () => '{}', 'o', 'r', [1]);
+  expect(result).toEqual({ projectsReason: 'Project board data is incomplete. Refresh to try again.' });
+});

@@ -16,6 +16,31 @@ const membershipSchema = z.object({ data: z.object({ repository: z.record(z.stri
 })) }) });
 const viewerSchema = z.object({ data: z.object({ viewer: z.object({ login: z.string().min(1) }) }) });
 
+const graphqlErrorsSchema = z.object({ errors: z.array(z.object({ message: z.string() })).optional() });
+
+function assertGraphqlSuccess(raw: unknown): void {
+  const errors = graphqlErrorsSchema.parse(raw).errors;
+  if (errors?.length) throw new Error(errors.map(error => error.message).join(' '));
+}
+
+/** Classify provider errors without echoing subprocess commands or arbitrary stderr. */
+function projectFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (/read:project|INSUFFICIENT_SCOPES/i.test(message)) {
+    return 'GitHub project read access is missing. Run gh auth refresh -s read:project, then refresh. If cezar uses GH_TOKEN or GITHUB_TOKEN, grant that token project read access instead.';
+  }
+  if (/resource not accessible|forbidden|HTTP 403/i.test(message)) {
+    return 'GitHub credentials cannot access project boards. Grant project read access to the account or token used by cezar, then refresh.';
+  }
+  if (/timed out|ETIMEDOUT/i.test(message) || (error instanceof Error && 'killed' in error && error.killed === true)) {
+    return 'Project board lookup timed out. Refresh to try again.';
+  }
+  if (error instanceof z.ZodError || /Incomplete project|page limit|cursor did not advance/i.test(message)) {
+    return 'Project board data is incomplete. Refresh to try again.';
+  }
+  return 'Project boards unavailable. Refresh to try again.';
+}
+
 /** Viewer is independent of Projects permissions, and cached with the list. */
 export async function fetchViewerLogin(run: GraphqlRunner): Promise<string | undefined> {
   try {
@@ -44,7 +69,7 @@ export async function fetchIssueProjects(
           nodes { id title url } pageInfo { hasNextPage endCursor }
         } }
       }`, { owner, name, ...(cursor ? { cursor } : {}) }));
-      if (raw.errors?.length) throw new Error('Project discovery failed');
+      assertGraphqlSuccess(raw);
       const connection = projectsSchema.parse(raw).data.repository.projectsV2;
       for (const board of connection.nodes) if (board) projects.set(board.id, board);
       if (!connection.pageInfo.hasNextPage) break;
@@ -69,7 +94,7 @@ export async function fetchIssueProjects(
       const raw = JSON.parse(await run(`query($owner:String!,$name:String!) {
         repository(owner:$owner,name:$name) { ${fields} }
       }`, { owner, name }));
-      if (raw.errors?.length) throw new Error('Project memberships unavailable');
+      assertGraphqlSuccess(raw);
       const rows = membershipSchema.parse(raw).data.repository;
       for (const n of batch) {
         const connection = rows[`i${n}`]?.projectItems;
@@ -80,7 +105,7 @@ export async function fetchIssueProjects(
       }
     }
     return { projects: [...projects.values()], membership };
-  } catch {
-    return { projectsReason: 'Project boards unavailable. Refresh to try again.' };
+  } catch (error) {
+    return { projectsReason: projectFailureReason(error) };
   }
 }
