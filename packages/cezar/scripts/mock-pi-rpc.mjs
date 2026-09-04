@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import readline from 'node:readline';
 
+// Pi handles SIGTERM and reports 128 + signal, rather than a null exit code.
+process.on('SIGTERM', () => process.exit(143));
+
 const sessionId = '00000000-0000-4000-8000-0000000000pi';
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
