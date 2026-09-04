@@ -184,7 +184,7 @@ describe('a resumed session keeps its workflow step tools', () => {
     await settled(id);
   });
 
-  it('a default Pi continuation unions Subagent onto DEFAULT_ALLOWED_TOOLS', async () => {
+  it('a default Pi continuation unions the complete subagent trio onto DEFAULT_ALLOWED_TOOLS', async () => {
     const def: WorkflowDef = {
       name: 'pi-task',
       source: 'file',
@@ -197,7 +197,7 @@ describe('a resumed session keeps its workflow step tools', () => {
 
     expect(manager!.continueRun(id, { text: 'keep going' })).toEqual({ ok: true });
     const spec = await specAt(0);
-    expect(spec.allowedTools).toEqual([...DEFAULT_ALLOWED_TOOLS, 'Subagent']);
+    expect(spec.allowedTools).toEqual([...DEFAULT_ALLOWED_TOOLS, 'Subagent', 'SubagentSupervisor', 'SubagentWait']);
     expect(spec.bashAllowlist).toBeUndefined();
     await settled(id);
   });

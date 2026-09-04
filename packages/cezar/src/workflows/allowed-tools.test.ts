@@ -11,10 +11,14 @@ describe('allowedToolsForStep', () => {
     expect(allowedToolsForStep(undefined, 'pi')).toEqual([
       ...DEFAULT_ALLOWED_TOOLS,
       'Subagent',
+      'SubagentSupervisor',
+      'SubagentWait',
     ]);
     expect(allowedToolsForStep({ allowedTools: undefined }, 'pi')).toEqual([
       ...DEFAULT_ALLOWED_TOOLS,
       'Subagent',
+      'SubagentSupervisor',
+      'SubagentWait',
     ]);
   });
 
@@ -43,7 +47,7 @@ describe('allowedToolsForStep', () => {
 
   it('has an extras row for every selectable runner', () => {
     expect(Object.keys(HARNESS_EXTRA_TOOLS).sort()).toEqual([...RUNNER_IDS].sort());
-    expect(HARNESS_EXTRA_TOOLS.pi).toEqual(['Subagent']);
+    expect(HARNESS_EXTRA_TOOLS.pi).toEqual(['Subagent', 'SubagentSupervisor', 'SubagentWait']);
     expect(HARNESS_EXTRA_TOOLS.claude).toEqual([]);
   });
 });
