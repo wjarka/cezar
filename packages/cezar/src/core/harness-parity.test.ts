@@ -142,6 +142,23 @@ const SEAM_CRITERIA: readonly SeamCriterion[] = [
     },
   },
   {
+    // Group 4 / #5, #600 — a spawned sub-agent runs in its own child session
+    // that emits a full lifecycle over the shared connection. Its terminal
+    // signal used to end the PARENT turn, so the parent's remaining work was
+    // attributed to a turn cezar had already closed.
+    id: 'S9',
+    name: 'S9 keeps the parent turn open past a child session terminal signal',
+    scenario: 'subagent',
+    assert: ({ v1 }) => {
+      expect(v1.filter((e) => e.type === 'turn-end')).toHaveLength(1);
+      const lastText = lastIndexWhere(v1, (e) => e.type === 'text');
+      expect(lastText).toBeGreaterThanOrEqual(0);
+      // The parent's own trailing text has to land BEFORE its turn-end. Under
+      // #600 the child's completion closed the turn first, so it did not.
+      expect(v1.findIndex((e) => e.type === 'turn-end')).toBeGreaterThan(lastText);
+    },
+  },
+  {
     // Group 7 — `resumeCommand()` and "open in CLI" need a session id after
     // every run. The two wires differ and both are legitimate: codex, opencode
     // and pi mint their own and echo a v1 `session` event, while claude pins
@@ -184,9 +201,10 @@ const CONTROL_CRITERIA = [
 ] as const;
 
 /**
- * Register one cell. An exempt cell still produces a named test, INVERTED: it
- * asserts the capability really is absent, so a backend that later gains it
- * fails its own exemption. Delete the entry then — never relax the assertion.
+ * Register one cell. An exempt cell still produces a named test that fails the
+ * day the backend gains the thing — see `ExemptionKind` for the two ways that
+ * is pinned. Never relax an assertion to accommodate an exemption; delete the
+ * exemption instead.
  */
 function parityRow(
   backend: RunnerId,
@@ -202,6 +220,14 @@ function parityRow(
       },
       45_000,
     );
+    return;
+  }
+  if (exempt.kind === 'scenario-unconstructible') {
+    it(`${backend} is exempt from ${criterion.id} — ${exempt.reason}`, () => {
+      // The pin: no prompt is declared, so nothing can drive this row here. Add
+      // one and this fails, which is the signal to make the row live.
+      expect(HARNESS_ADAPTERS[backend].scenarios[criterion.scenario]).toBeUndefined();
+    });
     return;
   }
   it(
@@ -294,6 +320,22 @@ describe('harness parity — the matrix itself', () => {
       expect(allIds).toContain(exemption.criterion);
       expect(RUNNER_IDS as readonly string[]).toContain(exemption.backend);
       expect(exemption.reason.trim()).not.toBe('');
+    }
+  });
+
+  it('each exemption kind agrees with whether a scenario prompt is declared', () => {
+    for (const exemption of PARITY_EXEMPTIONS) {
+      const declared =
+        HARNESS_ADAPTERS[exemption.backend].scenarios[scenarioOf(exemption.criterion)] !==
+        undefined;
+      // A contradictory entry is worse than none: `capability-absent` needs the
+      // scenario to be drivable so the inversion means something, and
+      // `scenario-unconstructible` claims the opposite.
+      expect({ criterion: exemption.criterion, backend: exemption.backend, declared }).toEqual({
+        criterion: exemption.criterion,
+        backend: exemption.backend,
+        declared: exemption.kind === 'capability-absent',
+      });
     }
   });
 

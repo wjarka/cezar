@@ -62,6 +62,41 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ info: info({}), parts: [] }));
       // The raw body is enough to spot a `mock:` marker — the prompt text is
       // inside it whatever part shape the runner used to wrap it.
+      if (body.includes('mock:subagent')) {
+        // Wire shape from `__fixtures__/opencode/subtask-nested.ndjson`: a
+        // `subtask` part on the parent message, then a child message whose info
+        // carries `parentID`, its parts, and the CHILD's own `session.idle`.
+        // That child idle arrives first on purpose — the parent turn has to
+        // survive it and close only on its own (#5, #600; harness parity S9).
+        send({ type: 'message.updated', properties: { info: info({}) } });
+        send({ type: 'message.part.updated', properties: { part: {
+          id: 'prt_mock_subt', messageID: MESSAGE_ID, sessionID: SESSION_ID, type: 'subtask',
+          prompt: 'Trace every caller of resolveSession', description: 'Trace resolveSession callers',
+          agent: 'general',
+        } } });
+        send({ type: 'message.updated', properties: { info: {
+          ...info({}), id: 'msg_mock_child', sessionID: 'ses_mock_child',
+          parentID: SESSION_ID, mode: 'subagent',
+        } } });
+        send({ type: 'message.part.updated', properties: { part: {
+          id: 'prt_mock_ctxt', messageID: 'msg_mock_child', sessionID: 'ses_mock_child',
+          type: 'text', text: 'Two callers: router.ts and session.ts.',
+          time: { start: 1760000008800, end: 1760000008900 },
+        } } });
+        send({ type: 'session.idle', properties: { sessionID: 'ses_mock_child' } });
+        setTimeout(() => {
+          send({ type: 'message.part.updated', properties: { part: {
+            id: 'prt_mock_ptxt', messageID: MESSAGE_ID, sessionID: SESSION_ID,
+            type: 'text', text: 'Still working after the sub-agent.',
+            time: { start: 1760000009000, end: 1760000009200 },
+          } } });
+          send({ type: 'message.updated', properties: { info: info({
+            cost: 0.0001, tokens: { input: 20, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+          }) } });
+          setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
+        }, 60);
+        return;
+      }
       if (body.includes('mock:provider-error')) {
         // The session-level error frame, wire shape copied verbatim from
         // `__fixtures__/opencode/session-error.ndjson`. #53: a bare upstream

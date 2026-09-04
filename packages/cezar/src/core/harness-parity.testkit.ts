@@ -146,10 +146,27 @@ export function promptFor(backend: RunnerId, scenario: ScenarioName): string {
   return prompt;
 }
 
+/**
+ * Why a cell is exempt, which decides how the matrix pins it. Both kinds fail
+ * the day the backend gains the thing, which is what keeps an exemption from
+ * going stale — they just cannot be pinned the same way.
+ *
+ * - `capability-absent` — the scenario IS constructible on this wire, the
+ *   backend simply does not produce the criterion's signal. Pinned by an
+ *   INVERTED assertion: the criterion must not hold.
+ * - `scenario-unconstructible` — the wire cannot even create the situation, so
+ *   there is nothing to invert (an unrelated baseline turn would satisfy some
+ *   criteria by accident). Pinned by requiring the adapter to declare NO prompt
+ *   for that scenario, so the day a mock answers it the exemption fails and the
+ *   row has to go live.
+ */
+export type ExemptionKind = 'capability-absent' | 'scenario-unconstructible';
+
 export interface ParityExemption {
   /** The criterion's stable id — `S9`, `R3`. */
   readonly criterion: string;
   readonly backend: RunnerId;
+  readonly kind: ExemptionKind;
   /** Why this backend's WIRE cannot carry it. Never "not implemented yet". */
   readonly reason: string;
 }
@@ -157,11 +174,22 @@ export interface ParityExemption {
 /**
  * Cells a backend's upstream protocol genuinely cannot carry.
  *
- * An entry here is not a waiver. The matrix runs an INVERTED assertion for it,
- * so a mock that later grows the capability fails its own exemption and forces
- * the entry's removal — a stale exemption cannot sit green.
+ * An entry here is not a waiver — see `ExemptionKind` for how each is pinned.
+ * "Not implemented yet" is never a reason: that is a failing row, and the fix
+ * is the runner, not this table.
  */
-export const PARITY_EXEMPTIONS: readonly ParityExemption[] = [];
+export const PARITY_EXEMPTIONS: readonly ParityExemption[] = [
+  {
+    criterion: 'S9',
+    backend: 'pi',
+    kind: 'scenario-unconstructible',
+    reason:
+      "pi's RPC has no child session: a `task` tool is a plain tool call on the parent " +
+      'session (see `__fixtures__/pi/rpc-lifecycle.expected.json` — the task item carries no ' +
+      'parentItemId and no child transcript), so there is no child terminal signal that could ' +
+      'end the parent turn.',
+  },
+];
 
 export function exemptionFor(criterion: string, backend: RunnerId): ParityExemption | undefined {
   return PARITY_EXEMPTIONS.find((e) => e.criterion === criterion && e.backend === backend);
