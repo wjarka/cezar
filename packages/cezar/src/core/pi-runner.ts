@@ -330,6 +330,8 @@ function piTools(tools: string[], bashAllowlist?: string[]): string[] {
     Grep: 'grep',
     Glob: 'find',
     Subagent: 'subagent',
+    SubagentSupervisor: 'subagent_supervisor',
+    SubagentWait: 'subagent_wait',
   };
   return [
     ...new Set(

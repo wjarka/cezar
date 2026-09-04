@@ -682,14 +682,14 @@ describe('pi RPC argv', () => {
     ).toEqual(['--mode', 'rpc', '--tools', 'read']);
   });
 
-  it('maps Subagent onto pi --tools so the default extras list is representable', () => {
+  it('maps the complete subagent trio onto pi --tools so the default extras list is representable', () => {
     expect(
       buildPiArgs({
         cwd: '/repo',
         userPrompt: 'task',
-        allowedTools: ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash', 'Subagent'],
+        allowedTools: ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash', 'Subagent', 'SubagentSupervisor', 'SubagentWait'],
       }),
-    ).toEqual(['--mode', 'rpc', '--tools', 'read,edit,write,grep,find,bash,subagent']);
+    ).toEqual(['--mode', 'rpc', '--tools', 'read,edit,write,grep,find,bash,subagent,subagent_supervisor,subagent_wait']);
   });
 
   it('does not inject Subagent when allowedTools is an explicit subset', () => {
