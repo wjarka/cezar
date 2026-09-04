@@ -99,6 +99,23 @@ const MONITORING_MARKER_RE = /CEZ:MONITORING\s*$/;
 function isClaudeScheduleWakeup(event: AgentEvent, backend: RunnerId): boolean {
   return backend === 'claude' && event.type === 'tool-call' && event.tool === 'ScheduleWakeup';
 }
+/** Events that prove a parked backend has resumed work on its own. Session
+ * diagnostics and completed-turn metadata are passive and must not disarm the
+ * only wake source for a truly parked monitor. */
+function isRunnerActivity(event: UiEvent): boolean {
+  switch (event.type) {
+    case 'turn.started':
+    case 'item.started':
+    case 'item.delta':
+    case 'item.updated':
+    case 'item.completed':
+    case 'plan.updated':
+    case 'image':
+      return true;
+    default:
+      return false;
+  }
+}
 /**
  * Preserve boundaries between complete assistant text blocks while a turn is
  * accumulated for marker parsing. The runners join these same v1 blocks with
@@ -1912,6 +1929,19 @@ export class RunManager {
     return delivered;
   }
 
+  /** Restore active lifecycle/accounting when either Cezar or the backend
+   * resumes work in a parked session. */
+  private resumeParkedRun(runId: string, state: ActiveRun): void {
+    this.clearIdleTimer(state);
+    this.clearMonitoringWakeTimer(state, runId);
+    this.waiting.delete(runId);
+    this.monitoring.delete(runId);
+    this.store.updateRun(runId, { status: 'running', activity: undefined });
+    if (state.currentStepId) {
+      this.store.updateStep(runId, state.currentStepId, { status: 'running' });
+    }
+  }
+
   /** Shared live-session delivery. Synthetic scheduler prompts reuse lifecycle
    * bookkeeping without masquerading as user-authored transcript messages. */
   private deliverMessage(runId: string, content: ContentBlock[], userAuthored: boolean): boolean {
@@ -1947,18 +1977,7 @@ export class RunManager {
     const expanded = userAuthored ? expandRegistrySlashSkill(content, state.skills ?? []) : content;
     const deliverable = persisted.length ? [...expanded, pastedAttachmentsNote(persisted)] : expanded;
     const delivered = state.session.sendMessage(deliverable);
-    if (delivered) {
-      this.clearIdleTimer(state);
-      this.clearMonitoringWakeTimer(state, runId);
-      this.waiting.delete(runId); // resumed — the run counts against slots again
-      this.monitoring.delete(runId);
-      // Clear any `monitoring` activity — the agent is actively working again
-      // (spec 2026-07-18-subagent-monitoring-status, #490).
-      this.store.updateRun(runId, { status: 'running', activity: undefined });
-      if (state.currentStepId) {
-        this.store.updateStep(runId, state.currentStepId, { status: 'running' });
-      }
-    }
+    if (delivered) this.resumeParkedRun(runId, state);
     return delivered;
   }
 
@@ -3134,14 +3153,21 @@ export class RunManager {
   private handleRunnerUiEvent(runId: string, state: ActiveRun, sink: UiEventSink, event: UiEvent): void {
     this.recordUsageUiEvent(runId, state, event);
     sink.handle(event);
-    if (event.type !== 'ask.requested' || state.cancelled) return;
-    this.clearIdleTimer(state);
-    this.monitoring.delete(runId);
-    this.clearMonitoringWakeTimer(state, runId);
-    this.waiting.add(runId);
-    this.store.updateRun(runId, { status: 'waiting', activity: undefined });
-    if (state.currentStepId) this.store.updateStep(runId, state.currentStepId, { status: 'waiting' });
-    this.releaseSlot();
+    if (state.cancelled) return;
+    if (event.type === 'ask.requested') {
+      this.clearIdleTimer(state);
+      this.monitoring.delete(runId);
+      this.clearMonitoringWakeTimer(state, runId);
+      this.waiting.add(runId);
+      this.store.updateRun(runId, { status: 'waiting', activity: undefined });
+      if (state.currentStepId) this.store.updateStep(runId, state.currentStepId, { status: 'waiting' });
+      this.releaseSlot();
+      return;
+    }
+    // Pi can resume autonomously when an async subagent completes. Work-producing
+    // events prove the backend owns an active turn again, so cancel its stale
+    // scheduler wake and restore active slot accounting.
+    if (this.monitoring.has(runId) && isRunnerActivity(event)) this.resumeParkedRun(runId, state);
   }
 
   /** Persist the invocation checkpoint before launching a runner. A throw or

@@ -1,25 +1,25 @@
 # Periodically wake monitoring sessions
 
-> Issue: #654 · Depends on: `2026-07-24-long-running-waiting-sessions.md`
+> Issue: #654 · Amended by: #810, #59 · Depends on: `2026-07-24-long-running-waiting-sessions.md`
 
 ## TLDR
 
-Durable bounded monitoring can wait indefinitely at zero model cost, but some stabilization workflows need the agent to re-check CI and continue as soon as it changes. Add an optional workspace wake interval that sends the same live agent a backend-neutral follow-up every N minutes after it emits `CEZ:MONITORING`. Parked mode stays the default; interval mode is explicitly cost-bearing, never overlaps turns, and stops after 40 automatic wakeups per monitoring epoch.
+Durable bounded monitoring can wait indefinitely at zero model cost, but stabilization workflows need the agent to re-check CI and continue as soon as it changes. A workspace wake interval sends the same live agent a backend-neutral follow-up every N minutes after it emits `CEZ:MONITORING`. The zero-config default is five minutes; operators can explicitly choose parked mode. Wakeups never overlap active turns and stop after 40 automatic checks per monitoring epoch.
 
 ## Resolved assumptions (autonomous defaults)
 
 | # | Question | Applied default | Why | Confirm? |
 |---|----------|-----------------|-----|----------|
-| Q1 | Fixed or adaptive cadence? | Fixed 1–60 minute interval; first opt-in starts at 5 minutes. | It is predictable across backends and easy to explain, test, and budget. | ok |
-| Q2 | Default behavior? | `monitoringWakeIntervalMinutes: null` means park until externally resumed. | Zero surprise and zero model spend remain the zero-config behavior. | ok |
+| Q1 | Fixed or adaptive cadence? | Fixed 1–60 minute interval; the default is 5 minutes. | It is predictable across backends and easy to explain, test, and budget. | ok |
+| Q2 | Default behavior? | `monitoringWakeIntervalMinutes: 5`; explicit `null` means park until externally resumed. | #810 established that a default-off wake leaves monitoring with no on-by-default exit after the idle timer was removed. | ok |
 | Q3 | Native backend scheduler or cezar timer? | Cezar timer using `AgentSession.sendMessage`. | Claude has `/loop`, but Codex CLI/app-server has no documented equivalent; parity belongs at the runner seam. | ok |
 | Q4 | Safety bound? | 40 automatic wakeups per monitoring epoch. | Reuses cezar's existing autonomous continuation ceiling and prevents forgotten loops from spending indefinitely. | ok |
 
 ## Problem Statement
 
-The foundational spec keeps agent-declared monitoring sessions alive and bounds their process capacity. A parked session, however, has no event source that tells the agent CI completed. A user can manually reply, and an external integration may eventually steer it, but stabilization workflows commonly need local polling on a modest cadence.
+The foundational spec keeps agent-declared monitoring sessions alive and bounds their process capacity. A parked session, however, has no guaranteed event source that tells the agent CI completed. A backend may resume autonomously when a subagent completes, and a user can manually reply, but stabilization workflows still need a reliable local polling cadence.
 
-This must remain opt-in. Every wake creates a real model turn, so making it implicit would widen cost and network usage. It must also behave identically across Claude, Codex, and OpenCode rather than exposing a capability only when a backend happens to ship its own scheduler.
+Every wake creates a real model turn, so the one-minute floor and 40-wakeup cap bound cost and network usage, while explicit parked mode remains available. The default must still provide an exit from monitoring with no external integration. Wake behavior must also remain backend-neutral rather than relying on a vendor scheduler.
 
 ## Research
 
@@ -31,8 +31,8 @@ The shared subset is small: schedule while idle, send a normal follow-up into th
 
 Add nullable workspace resource `monitoringWakeIntervalMinutes`:
 
-- `null` (default): durable monitoring remains parked until user/external input;
-- integer 1–60: after a turn parks with `CEZ:MONITORING`, schedule a wake after N minutes;
+- `null`: durable monitoring remains parked until user/external input;
+- integer 1–60 (default 5): after a turn parks with `CEZ:MONITORING`, schedule a wake after N minutes;
 - wake prompt: “Re-check the downstream work you were monitoring. Continue toward the task goal; emit `CEZ:MONITORING` again only if it is still pending.”;
 - when the next turn monitors again, schedule one new timer;
 - after 40 automatic wakeups in the current monitoring epoch, remain parked and emit a lifecycle note; a real user follow-up starts a new epoch.
@@ -46,10 +46,10 @@ Immediate autonomous mode keeps precedence and existing behavior. The timed mode
 Extend the workspace `resources` schema and existing GET/PUT contract:
 
 ```ts
-monitoringWakeIntervalMinutes: z.number().int().min(1).max(60).nullable().default(null).catch(null)
+monitoringWakeIntervalMinutes: z.number().int().min(1).max(60).nullable().default(5).catch(5)
 ```
 
-The key is additive, live-refreshable, `.passthrough()` safe, and requires no migration or environment variable. Invalid/corrupt values become parked mode. API PUT accepts `1..60 | null`; `null` cancels wakeups without ending sessions.
+The key is additive, live-refreshable, `.passthrough()` safe, and requires no migration or environment variable. Missing, invalid, or corrupt values use the five-minute default. API PUT accepts `1..60 | null`; `null` cancels wakeups without ending sessions.
 
 ### Wake coordinator
 
@@ -61,13 +61,13 @@ Add one unref'd timer and `monitoringWakeups` counter to each relevant `ActiveRu
 4. Deliver the fixed prompt through a private internal follow-up helper built on `AgentSession.sendMessage`; reuse state/slot cleanup but do not persist a fake user-authored message.
 5. Increment and append an observable `automatic monitoring wake-up (N/40)` note.
 6. Schedule the next timer only if that turn ends in monitoring again.
-7. Cancel the timer and clear `monitoringWakeAt` on user follow-up, non-monitoring turn, done, cancel, finish, failure, backend end, recovery cleanup, config switching to null, or reaching the cap.
+7. Cancel the timer and clear `monitoringWakeAt` on user follow-up, work-producing backend activity after parking, non-monitoring turn, done, cancel, finish, failure, backend end, recovery cleanup, config switching to null, or reaching the cap. Passive diagnostics do not disarm a truly parked monitor.
 
-No concurrent turn or catch-up queue exists: a timer is only present between turns, and missed intervals collapse into the next possible single wake. A rejected send follows the existing backend-end path and never retry-spins.
+No concurrent turn or catch-up queue exists: a timer is only present while the backend remains parked between turns. Work-producing backend activity synchronously removes monitoring membership before the timer callback can deliver, and missed intervals collapse into the next possible single wake. A rejected send follows the existing backend-end path and never retry-spins.
 
 ### Compatibility
 
-The backend seam already supports live follow-ups for Claude stream-json stdin, Codex app-server turns, and OpenCode HTTP sessions. No runner-specific API, marker, status, or new event kind is added. `monitoringWakeAt?: string` is an additive `RunRecord`/API field carried by the existing run update event; old records and clients continue to parse. The in-memory counter intentionally resets after process restart; existing session recovery governs whether a timer can be rebuilt for a genuinely live/recoverable monitor. A stale persisted deadline is cleared unless recovery proves the session is live and deliberately schedules a fresh future deadline.
+The backend seam already supports live follow-ups for Claude stream-json stdin, Codex app-server turns, OpenCode HTTP sessions, and Pi RPC sessions. No runner-specific API, marker, status, or new event kind is added. `monitoringWakeAt?: string` is an additive `RunRecord`/API field carried by the existing run update event; old records and clients continue to parse. The in-memory counter intentionally resets after process restart; existing session recovery governs whether a timer can be rebuilt for a genuinely live/recoverable monitor. A stale persisted deadline is cleared unless recovery proves the session is live and deliberately schedules a fresh future deadline.
 
 ## UI/UX
 
@@ -75,9 +75,9 @@ Add a Settings → Resources field below Extra monitoring sessions:
 
 - title: **Monitoring wake-up**;
 - mode select: **Park until resumed** or **Re-check on an interval**;
-- interval mode reveals a 1–60 minute numeric input and Save button, seeded to 5 on first opt-in;
+- interval mode reveals a 1–60 minute numeric input and Save button, defaulting to 5;
 - hint: **Park uses no model turns. Re-check sends the same agent a follow-up on this cadence until work completes or the 40-wakeup safety cap is reached.**;
-- helper: **Claude offers a similar `/loop`; cezar applies this consistently to Claude, Codex, and OpenCode.**
+- helper: **Claude offers a similar `/loop`; cezar applies this consistently to Claude, Codex, OpenCode, and Pi.**
 
 The control uses the existing resource mutation, cache update, toast, keyboard, mobile, and validation patterns. Proposed mockup: `assets/long-running-waiting-sessions/mockup-01-resources-monitoring-capacity.png`.
 
@@ -101,7 +101,7 @@ The same deadline should appear in the compact run status/header when space perm
 - Switching to Park cancels timers but leaves sessions alive.
 - Client/server clock skew affects only optional relative copy; the exact server-computed ISO deadline remains authoritative.
 - Refreshing or opening the session on another browser reconstructs the same exact deadline from `RunRecord.monitoringWakeAt`.
-- A slow agent turn cannot overlap the cadence; no timer exists during the turn.
+- A slow or autonomously resumed agent turn cannot overlap the cadence; work-producing backend activity clears the timer before active work continues.
 - A timer racing with terminal state re-checks synchronously and becomes a no-op.
 - Wake #40 runs normally; if it monitors again, cezar parks it without timer and emits the cap note.
 - A user message resets the epoch; a config refresh alone does not.
@@ -110,7 +110,7 @@ The same deadline should appear in the compact run status/header when space perm
 
 ## Risks & Impact Review
 
-- **Cost/network:** each tick is a model request. Default null, explicit UI copy, one-minute floor, and 40-wakeup cap bound surprise.
+- **Cost/network:** each tick is a model request. The five-minute default, explicit UI copy and opt-out, one-minute floor, and 40-wakeup cap bound surprise.
 - **Race risk:** timer/turn lifecycle can double-send if cleanup is scattered. One coordinator/helper and fake-timer tests are mandatory.
 - **Parity risk:** direct `/loop` integration would diverge by backend; the common sendMessage seam avoids it.
 - **Rollback:** reverting removes timers and ignores the passthrough config key; durable parked monitoring from the foundational spec remains functional.
@@ -123,11 +123,11 @@ The same deadline should appear in the compact run status/header when space perm
 
 ## Implementation Plan
 
-1. **Add the resource and run-record keys.** Extend workspace schema/load/response/input/web types with nullable range 1–60/default null. Add optional `monitoringWakeAt` to the run schema and web API type. *Tests:* absent/null/valid/invalid config, merge-write/passthrough, API validation/live refresh, old run records without the field, valid ISO round-trip, and clearing through `updateRun`.
+1. **Add the resource and run-record keys.** Extend workspace schema/load/response/input/web types with nullable range 1–60/default 5. Add optional `monitoringWakeAt` to the run schema and web API type. *Tests:* absent/null/valid/invalid config, merge-write/passthrough, API validation/live refresh, old run records without the field, valid ISO round-trip, and clearing through `updateRun`.
 2. **Extract internal follow-up delivery.** Refactor `RunManager.sendMessage` so user-authored persistence stays at the public boundary while a private system follow-up reuses delivery/state/slot logic. *Tests:* user events remain byte-compatible; synthetic wake text never appears as a user message.
 3. **Implement timer lifecycle and deadline publication.** Schedule only for parked monitoring, persist the exact deadline, cancel/clear on every exit or config change, and use unref. *Tests:* fake timers cover timestamp calculation, fire/clear, cancel, replace, race, no overlap, no catch-up, closed session, and stale recovery data.
 4. **Enforce the safety epoch.** Count automatic wakes, stop after 40, append lifecycle notes, and reset only on real user input. *Tests:* 40th/41st boundary and config-refresh non-reset.
-5. **Prove backend parity.** Run the same manager-level wake contract against Claude, Codex, and OpenCode fake sessions; no vendor scheduler/command is invoked.
+5. **Prove backend parity.** Run the same manager-level wake contract against Claude, Codex, OpenCode, and Pi fake sessions; no vendor scheduler/command is invoked.
 6. **Add Resources UI.** Implement mode select, conditional interval editor, validation, Save, helper text, and accessibility. *Tests:* null/interval payloads, cache, pending/error states, boundaries, accessible names.
 7. **Display the exact next wake.** Add the session/header presentation for scheduled, parked, active-turn, capped, and malformed-timestamp states using the existing run cache/event stream. *Tests:* exact localized date/time with time-zone and `<time dateTime>`, deadline replacement/removal, accessible status behavior, mobile wrapping, and no polling subscription.
 8. **Add browser evidence and docs.** Persist both modes through reload; open a monitoring session and capture the exact next-check time in the session view; verify it changes after a wake and disappears on completion. Capture the Resources control and document cost/cap semantics. Run the full validation and package gates.
