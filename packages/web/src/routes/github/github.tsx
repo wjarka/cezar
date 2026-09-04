@@ -57,6 +57,7 @@ import { orderSkillsByUsage } from '@/lib/skills'
 import { cn, isHttpUrl } from '@/lib/utils'
 
 import { Markdown } from '../task-thread/markdown'
+import { IssueFilters } from './issue-filters'
 import { allLabels, filterGithubItems, labelChipStyle } from './github-filter'
 import { GithubLoading } from './github-loading'
 import { HandToAgent } from './hand-to-agent'
@@ -254,6 +255,19 @@ export function GithubRoute({ view, changes = false }: { view: GithubView; chang
   // List filtering (#gh-filter): free-text search (by #id or any text) + a label narrow.
   const [query, setQuery] = useState('')
   const [labelFilter, setLabelFilter] = useState<readonly string[]>([])
+  const [assigneeFilter, setAssigneeFilter] = useState<readonly string[]>([])
+  const [projectFilter, setProjectFilter] = useState('')
+  // A refresh can revoke metadata or unlink a board. Do not leave an invisible active filter.
+  const activeProject = gh?.projects?.some(p => p.id === projectFilter) ? projectFilter : ''
+  useEffect(() => {
+    if (gh && projectFilter && !activeProject) setProjectFilter('')
+  }, [gh, projectFilter, activeProject])
+  const clearFilters = () => {
+    setQuery('')
+    setLabelFilter([])
+    setAssigneeFilter([])
+    setProjectFilter('')
+  }
 
   if (!gh) {
     if (list.isError) {
@@ -306,8 +320,8 @@ export function GithubRoute({ view, changes = false }: { view: GithubView; chang
   const allItems = view === 'issues' ? gh.issues : gh.prs
   const labelColors = gh.labelColors ?? {}
   const labelOptions = allLabels(allItems)
-  const items = filterGithubItems(allItems, { query, labels: labelFilter })
-  const filtering = query.trim() !== '' || labelFilter.length > 0
+  const items = filterGithubItems(allItems, { query, labels: labelFilter, ...(view === 'issues' ? { assignees: assigneeFilter, projectId: activeProject } : {}) })
+  const filtering = query.trim() !== '' || labelFilter.length > 0 || (view === 'issues' && (assigneeFilter.length > 0 || activeProject !== ''))
   const number = n === undefined ? null : Number.parseInt(n, 10)
   // No URL selection → the first item, like the legacy tab (rendered, not navigated-to). The
   // selection may point at an item outside the current filter — keep resolving it from the full
@@ -392,7 +406,7 @@ export function GithubRoute({ view, changes = false }: { view: GithubView; chang
                 placeholder="Search #id, title, author…"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="w-full rounded-md border border-input bg-card py-1 pr-2 pl-7 text-[13px] outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                className="min-h-11 w-full rounded-md border border-input bg-card py-1 pr-2 pl-7 text-[13px] outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
               />
             </div>
             <LabelFilter
@@ -402,6 +416,9 @@ export function GithubRoute({ view, changes = false }: { view: GithubView; chang
               onChange={setLabelFilter}
             />
           </div>
+          {view === 'issues' ? <IssueFilters data={gh} assignees={assigneeFilter} projectId={activeProject}
+            onAssigneesChange={setAssigneeFilter} onProjectChange={setProjectFilter} /> : null}
+          {filtering ? <button type="button" className="mb-2 min-h-11 min-w-11 rounded-md px-2 text-sm text-foreground hover:bg-muted" onClick={clearFilters}>Clear filters</button> : null}
         </header>
 
         {items.length === 0 ? (
@@ -596,7 +613,7 @@ function LabelFilter({
           data-slot="gh-label-filter"
           disabled={options.length === 0}
           className={cn(
-            'flex shrink-0 items-center gap-1 rounded-md border border-input bg-card px-2 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50',
+            'flex min-h-11 min-w-11 shrink-0 items-center gap-1 rounded-md border border-input bg-card px-2 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50',
             selected.length > 0 && 'border-primary/60 text-foreground',
           )}
         >
@@ -610,14 +627,14 @@ function LabelFilter({
           <CommandList className="max-h-[min(16rem,calc(var(--radix-popover-content-available-height)-3rem))]">
             <CommandEmpty>No labels.</CommandEmpty>
             {selected.length > 0 ? (
-              <CommandItem value="__clear__" onSelect={() => onChange([])} className="text-soft-foreground">
+              <CommandItem value="__clear__" onSelect={() => onChange([])} className="min-h-11 text-soft-foreground">
                 Clear {selected.length} filter{selected.length > 1 ? 's' : ''}
               </CommandItem>
             ) : null}
             {options.map((label) => {
               const on = selected.includes(label)
               return (
-                <CommandItem key={label} value={label} onSelect={() => toggle(label)}>
+                <CommandItem key={label} value={label} onSelect={() => toggle(label)} className="min-h-11">
                   <span
                     aria-hidden="true"
                     className="size-2.5 shrink-0 rounded-full border"

@@ -2391,3 +2391,101 @@ describe('groupCommitRuns', () => {
     expect(groupCommitRuns([])).toEqual([])
   })
 })
+
+describe('issue assignee and board controls', () => {
+  const filteredData = { ...GITHUB, viewerLogin: 'alice', projects: [{ id: 'P1', title: 'Delivery', url: 'https://github.com/users/acme/projects/1' }], issues: [
+    { ...ISSUE_142, assignees: ['alice'], projectIds: ['P1'] },
+    { ...ISSUE_139, assignees: ['bob'], projectIds: [] },
+  ] }
+  it('composes Assigned to me with the board and search, then clears every filter', async () => {
+    stubFetch({ 'GET /api/v1/github?limit=1000': () => jsonResponse(filteredData) })
+    renderAt('/github')
+    fireEvent.click(await screen.findByRole('button', { name: 'Assigned to me' }))
+    expect(rows().map(r => r.textContent).join()).toContain(ISSUE_142.title)
+    expect(rows().map(r => r.textContent).join()).not.toContain(ISSUE_139.title)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Project board' }), { target: { value: 'P1' } })
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search issues' }), { target: { value: 'no match' } })
+    expect(rows()).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(rows()).toHaveLength(2)
+  })
+  it('marks Assigned to me active only when the viewer is the sole assignee, including manual selection', async () => {
+    stubFetch({ 'GET /api/v1/github?limit=1000': () => jsonResponse(filteredData) })
+    renderAt('/github')
+    const me = await screen.findByRole('button', { name: 'Assigned to me' })
+    expect(me.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Assignees' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alice' }))
+    expect(me.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bob' }))
+    expect(me.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bob' }))
+    expect(me.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alice' }))
+    expect(me.getAttribute('aria-pressed')).toBe('false')
+  })
+  it('keeps issue filters off the PR list when changing tabs', async () => {
+    stubFetch({ 'GET /api/v1/github?limit=1000': () => jsonResponse(filteredData) })
+    renderAt('/github')
+    fireEvent.click(await screen.findByRole('button', { name: 'Assigned to me' }))
+    fireEvent.click(screen.getByRole('link', { name: /Pull requests ·/ }))
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.queryByRole('button', { name: 'Assigned to me' })).toBeNull()
+    expect(rows()[0]?.textContent).toContain(PR_137.title)
+  })
+})
+
+it('selects multiple assignees and retains filter chrome during refresh', async () => {
+  let finish!: (response: Response) => void
+  const data = { ...GITHUB, viewerLogin: 'alice', projects: [], issues: [
+    { ...ISSUE_142, assignees: ['alice'] }, { ...ISSUE_139, assignees: ['bob'] },
+  ] }
+  stubFetch({
+    'GET /api/v1/github?limit=1000': () => jsonResponse(data),
+    'GET /api/v1/github?limit=1000&refresh=1': () => new Promise(resolve => { finish = resolve }),
+  })
+  renderAt('/github')
+  fireEvent.click(await screen.findByRole('button', { name: 'Assignees' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'alice' }))
+  expect(rows()).toHaveLength(1)
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bob' }))
+  expect(rows()).toHaveLength(2)
+  fireEvent.keyDown(screen.getByRole('checkbox', { name: 'bob' }), { key: 'Escape' })
+  fireEvent.click(screen.getByTitle('Refresh from GitHub'))
+  await waitFor(() => expect(finish).toBeTypeOf('function'))
+  expect(screen.getByRole('button', { name: 'Assignees · 2' })).toBeTruthy()
+  expect(rows()).toHaveLength(2)
+  await act(async () => finish(jsonResponse(data)))
+  expect(screen.getByRole('button', { name: 'Assignees · 2' })).toBeTruthy()
+})
+
+it('keeps legacy metadata usable with disabled personal filtering and no board picker', async () => {
+  stubFetch()
+  renderAt('/github')
+  const me = await screen.findByRole('button', { name: 'Assigned to me' })
+  expect((me as HTMLButtonElement).disabled).toBe(true)
+  expect(screen.queryByRole('combobox', { name: 'Project board' })).toBeNull()
+  expect(rows()).toHaveLength(2)
+})
+
+it.each([[], undefined])('does not restore a stale board selection after refresh returns projects=%j', async projects => {
+  const boardData = { ...GITHUB, projects: [{ id: 'P1', title: 'Delivery', url: 'https://github.com/users/acme/projects/1' }], issues: [
+    { ...ISSUE_142, projectIds: ['P1'] }, { ...ISSUE_139, projectIds: [] },
+  ] }
+  let refreshes = 0
+  stubFetch({
+    'GET /api/v1/github?limit=1000': () => jsonResponse(boardData),
+    'GET /api/v1/github?limit=1000&refresh=1': () => jsonResponse(++refreshes === 1 ? { ...boardData, projects } : boardData),
+  })
+  renderAt('/github')
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Project board' }), { target: { value: 'P1' } })
+  expect(rows()).toHaveLength(1)
+  fireEvent.click(screen.getByTitle('Refresh from GitHub'))
+  await waitFor(() => expect(rows()).toHaveLength(2))
+  expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull()
+  await waitFor(() => expect((screen.getByTitle('Refresh from GitHub') as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByTitle('Refresh from GitHub'))
+  const picker = await screen.findByRole('combobox', { name: 'Project board' })
+  expect((picker as HTMLSelectElement).value).toBe('')
+  expect(rows()).toHaveLength(2)
+})

@@ -29,6 +29,9 @@ export const githubItemSchema = z.object({
   body: z.string(),
   url: z.string(),
   comments: z.number(),
+  /** Issues only; absent on older servers. */
+  assignees: z.array(z.string()).optional(),
+  projectIds: z.array(z.string()).optional(),
   /** PRs only. */
   isDraft: z.boolean().optional(),
   additions: z.number().optional(),
@@ -43,6 +46,13 @@ export type GithubItem = z.infer<typeof githubItemSchema>;
  * NOT a discriminated union, unlike its siblings: `fetchGithub` always answers the full record and
  * merely flips `available`, so an unavailable payload still carries `issues: []` / `prs: []`.
  */
+export const githubProjectSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  url: z.string(),
+});
+export type GithubProject = z.infer<typeof githubProjectSchema>;
+
 export const githubDataSchema = z.object({
   available: z.boolean(),
   /** Why it is unavailable (`gh` missing, no remote, offline…). Never an error — a hint. */
@@ -54,6 +64,10 @@ export const githubDataSchema = z.object({
   prs: z.array(githubItemSchema),
   /** Repo-wide label name → 6-hex color (no `#`); lets chips tint like GitHub. Additive. */
   labelColors: z.record(z.string(), z.string()).optional(),
+  viewerLogin: z.string().optional(),
+  /** Repository-linked Projects v2. Absent when lookup is unavailable; [] means none. */
+  projects: z.array(githubProjectSchema).optional(),
+  projectsReason: z.string().optional(),
 });
 export type GithubData = z.infer<typeof githubDataSchema>;
 

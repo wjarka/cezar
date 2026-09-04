@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { REFERENCE_STATUS_MAX } from '@open-mercato/cezar-contract';
+import { fetchIssueProjects, fetchViewerLogin } from './github-filters.ts';
 import { autosaveCommit } from '../../git-worktree.ts';
 import type {
   DraftPrInput,
@@ -170,19 +171,7 @@ function mockGithubPrDiff(number: number): ForgePrDiffResult {
 /** One GitHub issue or pull request, flattened for the cockpit's GitHub tab. */
 export type GithubItem = ForgeItem;
 
-export interface GithubData {
-  available: boolean;
-  /** Human-readable hint when unavailable (`gh` missing, no remote, offline…). */
-  reason?: string;
-  /** owner/name, when known. */
-  repo?: string;
-  syncedAt?: string;
-  issues: GithubItem[];
-  prs: GithubItem[];
-  /** Repo-wide map of label name → 6-hex color (no `#`), so the UI can tint chips like GitHub
-   *  does. Additive (BACKWARD_COMPATIBILITY): absent on old payloads, chips fall back to neutral. */
-  labelColors?: Record<string, string>;
-}
+export type GithubData = import('@open-mercato/cezar-contract').GithubData;
 
 // `gh … --json` output — validated at the boundary, extras stripped.
 const ghAuthor = z.object({ login: z.string() }).nullish();
@@ -194,6 +183,7 @@ const ghIssueSchema = z.object({
   author: ghAuthor,
   createdAt: z.string(),
   labels: z.array(ghLabel).default([]),
+  assignees: z.array(z.object({ login: z.string() })).default([]),
   body: z.string().nullish(),
   url: z.string(),
 });
@@ -407,14 +397,31 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
     // window and no more — the default 30-item load pays ONE counts round-trip, not ten. Rows
     // beyond the window keep `comments: 0`, which the UI reads as "no badge" (same as before).
     const countsMaxPages = Math.min(GH_COUNTS_MAX_PAGES, Math.max(1, Math.ceil(capped / 100)));
-    const [issuesOut, prsOut, counts] = await Promise.all([
-      gh(repoRoot, ['issue', 'list', '--limit', String(capped), '--json', fields], timeout),
+    // Optional project queries have one shared wall-clock budget. A missing scope, a cap,
+    // or malformed metadata must never turn an otherwise working list into unavailable.
+    const deadline = Date.now() + 15_000;
+    const projectGraphql: GraphqlRunner = (query, variables) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return Promise.reject(new Error('Project lookup timed out'));
+      const args = ['api', 'graphql', '-f', `query=${query}`];
+      for (const [key, value] of Object.entries(variables)) args.push('-f', `${key}=${value}`);
+      return gh(repoRoot, args, Math.min(remaining, 8_000));
+    };
+    const issueList = gh(repoRoot, ['issue', 'list', '--limit', String(capped), '--json', `${fields},assignees`], timeout);
+    const projectLookup = ownerName
+      ? fetchIssueProjects(projectGraphql, ownerName.owner, ownerName.name,
+          async () => z.array(ghIssueSchema).parse(JSON.parse(await issueList)).map(i => i.number))
+      : Promise.resolve({ projectsReason: 'Project boards unavailable for this repository.' });
+    const [issuesOut, prsOut, counts, viewerLogin, projectData] = await Promise.all([
+      issueList,
       gh(repoRoot, ['pr', 'list', '--limit', String(capped), '--json', `${fields},isDraft,additions,deletions`], timeout),
       // Real comment counts (#499). Degrades to empty maps on its own — a failure here leaves
       // every count at 0, never fails the tab. Skipped entirely if the handle isn't parseable.
       ownerName
         ? fetchCommentCounts(runGraphql, ownerName.owner, ownerName.name, countsMaxPages)
         : Promise.resolve<{ issues: Record<number, number>; prs: Record<number, number> }>({ issues: {}, prs: {} }),
+      fetchViewerLogin((query) => gh(repoRoot, ['api', 'graphql', '-f', `query=${query}`], 8_000)),
+      projectLookup,
     ]);
     // One repo-wide label→color map, filled as we flatten each item's labels.
     const labelColors: Record<string, string> = {};
@@ -434,6 +441,7 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
           body: (i.body ?? '').slice(0, 8_000),
           url: i.url,
           comments: counts.issues[i.number] ?? 0,
+          assignees: i.assignees.map(a => a.login),
         };
       },
     );
@@ -459,6 +467,9 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
         };
       },
     );
+    if ('membership' in projectData && projectData.membership) {
+      for (const issue of issues) issue.projectIds = projectData.membership[issue.number] ?? [];
+    }
     const data: GithubData = {
       available: true,
       repo: repoOut.trim() || undefined,
@@ -466,6 +477,9 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
       issues,
       prs,
       labelColors,
+      ...(viewerLogin ? { viewerLogin } : {}),
+      ...('projects' in projectData ? { projects: projectData.projects } : {}),
+      ...('projectsReason' in projectData ? { projectsReason: projectData.projectsReason } : {}),
     };
     listCache.delete(repoRoot); // re-insert so this key becomes the newest
     listCache.set(repoRoot, { at: Date.now(), limit: capped, data });
@@ -501,11 +515,13 @@ function mockGithub(): GithubData {
   return {
     available: true,
     repo: 'mock/repo',
+    viewerLogin: 'octocat',
+    projects: [{ id: 'mock-delivery', title: 'Delivery', url: 'https://github.com/users/mock/projects/1' }],
     syncedAt: new Date().toISOString(),
     issues: [
-      mk({ kind: 'issue', number: 142, title: 'Login form drops session on refresh', labels: ['bug', 'auth'], comments: 3, body: 'Repro: log in, hit reload — you land back on /login. The session cookie is set correctly, but the client store rehydrates before the cookie check resolves, so the auth guard redirects.' }),
-      mk({ kind: 'issue', number: 139, title: 'Add --json flag to cez CLI output', labels: ['enhancement', 'cli'], comments: 1, body: 'For scripting it would help if `cez list` and `cez status` could emit machine-readable JSON instead of the table view.' }),
-      mk({ kind: 'issue', number: 135, title: 'Flaky e2e: worktree cleanup race on cancel', labels: ['bug', 'flaky-test'], comments: 6, body: 'Cancelling a run while the agent holds a file lock leaves a dangling worktree. The next run on the same branch then fails with "worktree already exists".' }),
+      mk({ kind: 'issue', assignees: ['octocat'], projectIds: ['mock-delivery'], number: 142, title: 'Login form drops session on refresh', labels: ['bug', 'auth'], comments: 3, body: 'Repro: log in, hit reload — you land back on /login. The session cookie is set correctly, but the client store rehydrates before the cookie check resolves, so the auth guard redirects.' }),
+      mk({ kind: 'issue', assignees: ['ada'], projectIds: [], number: 139, title: 'Add --json flag to cez CLI output', labels: ['enhancement', 'cli'], comments: 1, body: 'For scripting it would help if `cez list` and `cez status` could emit machine-readable JSON instead of the table view.' }),
+      mk({ kind: 'issue', assignees: [], projectIds: ['mock-delivery'], number: 135, title: 'Flaky e2e: worktree cleanup race on cancel', labels: ['bug', 'flaky-test'], comments: 6, body: 'Cancelling a run while the agent holds a file lock leaves a dangling worktree. The next run on the same branch then fails with "worktree already exists".' }),
     ],
     prs: [
       mk({ kind: 'pr', number: 128, title: 'Fix flaky auth test in CI', labels: ['tests'], checks: 'passing', additions: 6, deletions: 3, body: 'Loosens the timing assertion in refresh.test.ts to a realistic budget.' }),
