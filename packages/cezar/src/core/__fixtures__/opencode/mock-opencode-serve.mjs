@@ -60,6 +60,25 @@ const server = createServer((req, res) => {
       // `prompt_async` semantics: acknowledge now, stream the turn over SSE.
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ info: info({}), parts: [] }));
+      // The raw body is enough to spot a `mock:` marker — the prompt text is
+      // inside it whatever part shape the runner used to wrap it.
+      if (body.includes('mock:hold')) {
+        // The response above is the ack (this is the #4 wire: `prompt_async`
+        // resolves immediately, the turn arrives over SSE afterwards). Holding
+        // the content behind it is what makes harness parity S2 meaningful.
+        setTimeout(() => {
+          const held = 'parity hold: content after the pause';
+          send({ type: 'message.updated', properties: { info: info({}) } });
+          send({ type: 'message.part.updated', properties: { part: {
+            id: 'prt_mock_hold', messageID: MESSAGE_ID, sessionID: SESSION_ID, type: 'text', text: held,
+          } } });
+          send({ type: 'message.updated', properties: { info: info({
+            cost: 0.0001, tokens: { input: 20, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+          }) } });
+          setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
+        }, 250);
+        return;
+      }
       send({ type: 'message.updated', properties: { info: info({}) } });
       send({
         type: 'message.part.updated',

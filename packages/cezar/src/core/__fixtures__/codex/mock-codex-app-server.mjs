@@ -58,6 +58,21 @@ rl.on('line', (line) => {
     emit({ id: msg.id, result: { turn: { id: 'turn_mock_1' } } });
     emit({ method: 'turn/started', params: { turn: { id: 'turn_mock_1', status: 'inProgress', items: [] } } });
     const turnText = msg.params?.input?.map?.((part) => part.text ?? '').join('\n') ?? '';
+    if (turnText.includes('mock:hold')) {
+      // The `turn/start` response and `turn/started` above are the ack. Holding
+      // the content AND `turn/completed` behind it is what makes harness parity
+      // S2 meaningful: a runner deriving turn-end from the ack reports it before
+      // this content ever arrives (the #4 failure mode on codex's wire).
+      setTimeout(() => {
+        const held = 'parity hold: content after the pause';
+        emit({ method: 'item/started', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_h1', text: '' } } });
+        emit({ method: 'item/agentMessage/delta', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_h1', delta: held } });
+        emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_h1', text: held } } });
+        emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
+        emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      }, 250);
+      return;
+    }
     if (turnText.includes('mock:turn-failed')) {
       emit({ method: 'turn/failed', params: {
         turn: { id: 'turn_mock_1', status: 'failed' },

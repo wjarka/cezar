@@ -136,6 +136,23 @@ async function respond(userText, imageCount) {
   // `mock:slow` → hold the turn for ~25 s so queue states are observable.
   if (userText.includes('mock:slow')) await sleep(25_000);
 
+  // `mock:hold` → pause, THEN stream the content and the terminal `result`.
+  // The harness parity matrix's S2 row asserts turn-end follows the last
+  // content event, so the pause has to sit BEFORE the content: a runner that
+  // closed the turn on a timer after writing the prompt would report it early.
+  // Short on purpose — `mock:slow` above is the 25 s queue-state hold.
+  if (userText.includes('mock:hold')) {
+    await sleep(250);
+    const held = 'parity hold: content after the pause';
+    emit({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: held }], usage: { input_tokens: 20, output_tokens: 10 } },
+    });
+    await sleep(250);
+    emit({ type: 'result', subtype: 'success', result: held, usage: { input_tokens: 20, output_tokens: 10 }, total_cost_usd: 0.0001 });
+    return;
+  }
+
   // Mirrors the real Claude Code 2.1.148 revoked-token envelope: the CLI puts
   // the credential failure in an `is_error` result even though its subtype is
   // `success`, rather than emitting a dedicated error frame.

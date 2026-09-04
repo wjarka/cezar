@@ -3,6 +3,25 @@ import readline from 'node:readline';
 
 const sessionId = '00000000-0000-4000-8000-0000000000pi';
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The text_start / text_delta* / text_end trio pi streams for one assistant block. */
+function sendText(deltas) {
+  const content = deltas.join('');
+  send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: {} } });
+  for (const delta of deltas) {
+    send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta, partial: {} } });
+  }
+  send({ type: 'message_update', message: {}, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content, partial: {} } });
+}
+
+/** The terminal quartet: usage-bearing message_end, then turn/agent settle. */
+function sendTurnEnd(usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } }) {
+  send({ type: 'message_end', message: { role: 'assistant', usage } });
+  send({ type: 'turn_end', message: {}, toolResults: [] });
+  send({ type: 'agent_end', messages: [], willRetry: false });
+  send({ type: 'agent_settled' });
+}
 
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const command = JSON.parse(line);
@@ -24,6 +43,18 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
         pendingMessageCount: 0,
       },
     });
+  } else if (command.type === 'prompt' && command.message.includes('mock:hold')) {
+    // The `response` below is the ack. Holding the content AND the terminal
+    // quartet behind it is what makes harness parity S2 meaningful: a runner
+    // deriving turn-end from the ack reports it before this content arrives
+    // (the #4 failure mode on pi's wire).
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    await sleep(250);
+    sendText(['parity hold: content after the pause']);
+    await sleep(250);
+    sendTurnEnd();
   } else if (command.type === 'prompt') {
     const monitoringMarker = command.message.includes('mock:monitoring') ? '\n\nCEZ:MONITORING' : '';
     const responseText = `Investigating: ${command.message}${monitoringMarker}`;

@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { RUNNER_IDS, type AgentEvent, type RunnerId } from './agent-runner.ts';
 import {
   driveSeam,
+  lastIndexWhere,
   exemptionFor,
   HARNESS_ADAPTERS,
   PARITY_EXEMPTIONS,
@@ -55,6 +56,26 @@ const SEAM_CRITERIA: readonly SeamCriterion[] = [
     assert: ({ v1 }) => {
       expect(v1.filter((e) => e.type === 'done')).toHaveLength(1);
       expect(v1.at(-1)?.type).toBe('done');
+    },
+  },
+  {
+    // Group 2 / #4 — the OpenCode five-minute cut. The runner used to end the
+    // turn from its transport's own response, so undici's 300s headers timeout
+    // killed a healthy long turn and cezar parked the run. `hold` acknowledges
+    // the prompt, THEN waits before emitting content and its terminal signal:
+    // a runner that still derives turn-end from the ack reports it before the
+    // content it is supposed to close over.
+    id: 'S2',
+    name: 'S2 ends the turn on its own terminal signal, after the last content event',
+    scenario: 'hold',
+    assert: ({ v1, v2 }) => {
+      const lastContent = Math.max(
+        lastIndexWhere(v1, (e) => e.type === 'text'),
+        lastIndexWhere(v1, (e) => e.type === 'tool-result'),
+      );
+      expect(lastContent).toBeGreaterThanOrEqual(0);
+      expect(v1.findIndex((e) => e.type === 'turn-end')).toBeGreaterThan(lastContent);
+      expect(v2.filter((e) => e.type === 'turn.completed')).toHaveLength(1);
     },
   },
   {
