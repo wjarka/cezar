@@ -62,6 +62,23 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ info: info({}), parts: [] }));
       // The raw body is enough to spot a `mock:` marker — the prompt text is
       // inside it whatever part shape the runner used to wrap it.
+      if (body.includes('mock:provider-error')) {
+        // The session-level error frame, wire shape copied verbatim from
+        // `__fixtures__/opencode/session-error.ndjson`. #53: a bare upstream
+        // rejection used to read like a missing executable, and the run parked
+        // as "Needs You" rather than failing (harness parity S7).
+        send({ type: 'message.updated', properties: { info: info({}) } });
+        send({ type: 'message.part.updated', properties: { part: {
+          id: 'prt_mock_perr', messageID: MESSAGE_ID, sessionID: SESSION_ID,
+          type: 'text', text: 'Starting the review',
+        } } });
+        send({ type: 'session.error', properties: { sessionID: SESSION_ID, error: {
+          name: 'ProviderAuthError',
+          data: { message: 'API key expired — run `opencode auth login`' },
+        } } });
+        setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
+        return;
+      }
       if (body.includes('mock:split-text')) {
         // OpenCode streams a text part as successive GROWING snapshots of the
         // same part id; only the final one carries `time.end`. A runner emitting

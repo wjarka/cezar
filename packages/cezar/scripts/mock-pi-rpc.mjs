@@ -53,6 +53,27 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     send({ type: 'turn_start' });
     sendText(['parity split text', '\n\n', 'CEZ:', 'MONITORING']);
     sendTurnEnd();
+  } else if (command.type === 'prompt' && command.message.includes('mock:provider-error')) {
+    // An assistant `message_end` whose stopReason is `error`, carrying the
+    // transport diagnostic — wire shape copied from
+    // `src/core/__fixtures__/pi/provider-error.ndjson`. #54: this arrived
+    // before `agent_settled` and the run parked as "Needs You" instead of
+    // failing (harness parity S7).
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    send({ type: 'message_end', message: {
+      role: 'assistant',
+      content: [],
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      model: 'gpt-5.6-sol',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+      stopReason: 'error',
+      diagnostics: [{ type: 'provider_transport_failure', error: { name: 'Error', message: 'WebSocket error' } }],
+      errorMessage: 'Not Found',
+    } });
+    send({ type: 'agent_settled' });
   } else if (command.type === 'prompt' && command.message.includes('mock:hold')) {
     // The `response` below is the ack. Holding the content AND the terminal
     // quartet behind it is what makes harness parity S2 meaningful: a runner

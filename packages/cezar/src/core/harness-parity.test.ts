@@ -110,6 +110,38 @@ const SEAM_CRITERIA: readonly SeamCriterion[] = [
     },
   },
   {
+    // Group 1 / #53, #54 — a runtime provider rejection used to look like a
+    // clean finish, so the orchestrator parked the run as "Needs You" and the
+    // user waited on an agent that was never coming back. The rejection has to
+    // reach BOTH streams: v1 `error` is what fails the run, v2 `session.error`
+    // is what the cockpit renders.
+    id: 'S7',
+    name: 'S7 surfaces a provider failure as an error on both streams',
+    scenario: 'provider-error',
+    assert: ({ v1, v2 }) => {
+      const errors = v1.filter(
+        (e): e is Extract<AgentEvent, { type: 'error' }> => e.type === 'error',
+      );
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]?.message.trim() ?? '').not.toBe('');
+      // v2 must signal it too, but the CHANNEL is legitimately per-wire:
+      // opencode and pi have a session-level error frame, codex reports a
+      // failed turn, and claude only has the result envelope's stop reason.
+      // What is uniform — and what #53/#54 were — is that v2 never reports the
+      // rejection as a clean end of turn.
+      expect(
+        v2.some(
+          (e) =>
+            e.type === 'session.error' ||
+            (e.type === 'turn.completed' && e.stopReason === 'error'),
+        ),
+      ).toBe(true);
+      expect(v2.some((e) => e.type === 'turn.completed' && e.stopReason === 'end_turn')).toBe(
+        false,
+      );
+    },
+  },
+  {
     // Group 7 — `resumeCommand()` and "open in CLI" need a session id after
     // every run. The two wires differ and both are legitimate: codex, opencode
     // and pi mint their own and echo a v1 `session` event, while claude pins
