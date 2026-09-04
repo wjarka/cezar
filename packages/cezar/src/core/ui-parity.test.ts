@@ -11,6 +11,13 @@
  *
  * `BACKENDS` lists every backend that owns a wire mapper. Pi uses its documented
  * RPC protocol and therefore has its own wire-faithful fixture set.
+ *
+ * This file is one of TWO parity matrices, and they split by axis: this one asks
+ * what a mapper EMITS, over the golden fixtures. Its sibling
+ * `harness-parity.test.ts` asks what a runner DOES — session lifecycle,
+ * provider-failure surfacing, `sendMessage`, ask routing, park declarations —
+ * by driving the real runner classes. A new backend must pass both
+ * (`AGENT_PROTOCOL.md` §6 and §7).
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

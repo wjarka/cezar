@@ -27,7 +27,13 @@ rl.on('line', (line) => {
   } catch {
     return;
   }
-  if (msg.id === 'ask-1' && msg.result) {
+  if (msg.id === 'ask-bad-1' && msg.error) {
+    // The runner rejected the malformed payload with -32602, as it must. A real
+    // app-server carries on from there, so the turn still completes — a mock
+    // that went silent here would make harness parity R4 pass by hanging
+    // instead of by ending the turn.
+    emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+  } else if (msg.id === 'ask-1' && msg.result) {
     const answer = msg.result.answers?.library?.answers;
     const freeText = msg.result.answers?.first?.answers;
     emit((Array.isArray(answer) && answer[0] === 'Vitest') || (Array.isArray(freeText) && freeText[0] === 'Use sensible defaults')
@@ -58,6 +64,59 @@ rl.on('line', (line) => {
     emit({ id: msg.id, result: { turn: { id: 'turn_mock_1' } } });
     emit({ method: 'turn/started', params: { turn: { id: 'turn_mock_1', status: 'inProgress', items: [] } } });
     const turnText = msg.params?.input?.map?.((part) => part.text ?? '').join('\n') ?? '';
+    if (turnText.includes('mock:split-text')) {
+      // Deltas that split the marker itself, then the authoritative snapshot on
+      // `item/completed` — codex's real streaming shape. A runner emitting one
+      // v1 `text` per delta tears `CEZ:MONITORING` into `CEZ:` + `MONITORING`,
+      // which is #2 on codex's wire (harness parity S8).
+      const full = 'parity split text\n\nCEZ:MONITORING';
+      emit({ method: 'item/started', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_sp1', text: '' } } });
+      for (const delta of ['parity split text\n\n', 'CEZ:', 'MONITORING']) {
+        emit({ method: 'item/agentMessage/delta', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_sp1', delta } });
+      }
+      emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_sp1', text: full } } });
+      emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
+      emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      return;
+    }
+    if (turnText.includes('mock:ask-bad')) {
+      // `questions` is not an array of question objects, so `codexAskQuestions`
+      // must reject it: no card renders, and the turn still ends once the
+      // rejection lands above (harness parity R4).
+      emit({ id: 'ask-bad-1', method: 'item/tool/requestUserInput', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_ask_bad', autoResolutionMs: null,
+        questions: 'not-an-array',
+      } });
+      return;
+    }
+    if (turnText.includes('mock:done')) {
+      // A turn that DECLARES the task complete, so the run reaches cezar's
+      // review gate instead of parking for the user. A markerless turn-end
+      // correctly parks as `waiting`, which is why harness parity R1 needs
+      // this scenario rather than the baseline one.
+      const full = 'parity done: the task is complete\n\nCEZ:DONE';
+      emit({ method: 'item/started', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_d1', text: '' } } });
+      emit({ method: 'item/agentMessage/delta', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_d1', delta: full } });
+      emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_d1', text: full } } });
+      emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
+      emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      return;
+    }
+    if (turnText.includes('mock:hold')) {
+      // The `turn/start` response and `turn/started` above are the ack. Holding
+      // the content AND `turn/completed` behind it is what makes harness parity
+      // S2 meaningful: a runner deriving turn-end from the ack reports it before
+      // this content ever arrives (the #4 failure mode on codex's wire).
+      setTimeout(() => {
+        const held = 'parity hold: content after the pause';
+        emit({ method: 'item/started', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_h1', text: '' } } });
+        emit({ method: 'item/agentMessage/delta', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_h1', delta: held } });
+        emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_h1', text: held } } });
+        emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
+        emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      }, 250);
+      return;
+    }
     if (turnText.includes('mock:turn-failed')) {
       emit({ method: 'turn/failed', params: {
         turn: { id: 'turn_mock_1', status: 'failed' },
