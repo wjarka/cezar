@@ -10,6 +10,7 @@ import { RepoBranchesSection } from './repo-branches'
 import { RepoChangesSection } from './repo-changes'
 import { RepoCommitsSection } from './repo-commits'
 import { RepoGitLoading } from './repo-git-loading'
+import { RepoPull } from './repo-pull'
 
 /**
  * `/git` — the repo view rebuilt on the task git view's own components (spec §"Session git
@@ -64,14 +65,17 @@ function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab
         data-slot="repo-header"
         className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 pt-3 backdrop-blur md:px-6"
       >
-        <div className="flex min-w-0 items-center gap-2.5">
-          <h1 className="text-lg font-semibold">Git</h1>
-          <BranchChip branch={info.branch} />
-          {info.remote ? (
-            <span data-slot="repo-remote" className="hidden min-w-0 truncate text-[11px] text-soft-foreground md:inline">
-              {info.remote}
-            </span>
-          ) : null}
+        <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start">
+          <div className="flex min-w-0 items-center gap-2.5 md:min-h-11">
+            <h1 className="text-lg font-semibold">Git</h1>
+            <BranchChip branch={info.branch} />
+            {info.remote ? (
+              <span data-slot="repo-remote" className="hidden min-w-0 truncate text-[11px] text-soft-foreground lg:inline">
+                {info.remote}
+              </span>
+            ) : null}
+          </div>
+          <RepoPull repo={repo} info={info} />
         </div>
 
         <div data-slot="repo-tabs" className="mt-2.5 flex items-end gap-1">

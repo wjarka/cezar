@@ -15,6 +15,9 @@ import type {
   changesPayloadSchema,
   reclaimWorktreesResponseSchema,
   repoBranchResponseSchema,
+  repoPullBranchesResponseSchema,
+  repoPullResponseSchema,
+  repoPullErrorSchema,
   repoCommitPayloadSchema,
   repoResponseSchema,
   worktreeEntrySchema,
@@ -69,6 +72,9 @@ describe('src/contract github + repo schemas match the routes exactly', () => {
   // ---- repo / git -----------------------------------------------------------------------
   type Repo200 = InferResponseType<typeof client.api.v1.repo.$get, 200>;
   type RepoBranch200 = InferResponseType<typeof client.api.v1.repo.branch.$post, 200>;
+  type RepoPull200 = InferResponseType<typeof client.api.v1.repo.pull.$post, 200>;
+  type RepoPull409 = InferResponseType<typeof client.api.v1.repo.pull.$post, 409>;
+  type RepoPullBranches200 = InferResponseType<typeof client.api.v1.repo.pull.$get, 200>;
   type RepoChanges200 = InferResponseType<typeof client.api.v1.repo.changes.$get, 200>;
   type RunChanges200 = InferResponseType<(typeof client.api.v1.runs)[':id']['changes']['$get'], 200>;
   type RunCommit200 = InferResponseType<
@@ -108,6 +114,9 @@ describe('src/contract github + repo schemas match the routes exactly', () => {
     Assert<Exact<z.infer<typeof githubPrChangesDataSchema>, GithubPrChanges200>>,
     Assert<Exact<z.infer<typeof repoResponseSchema>, Repo200>>,
     Assert<Exact<z.infer<typeof repoBranchResponseSchema>, RepoBranch200>>,
+    Assert<Exact<z.infer<typeof repoPullResponseSchema>, RepoPull200>>,
+    Assert<Exact<z.infer<typeof repoPullErrorSchema>, RepoPull409>>,
+    Assert<Exact<z.infer<typeof repoPullBranchesResponseSchema>, RepoPullBranches200>>,
     Assert<Exact<z.infer<typeof changesPayloadSchema>, RepoChanges200>>,
     Assert<Exact<z.infer<typeof changesPayloadSchema>, RunChanges200>>,
     Assert<Exact<z.infer<typeof repoCommitPayloadSchema>, RepoCommit200>>,

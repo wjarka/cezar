@@ -26,6 +26,7 @@ import { jsonZodValidator, paramZodValidator, queryZodValidator } from './valida
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
 import {
+  repoPullInputSchema,
   setWorkspaceUiStateInputSchema,
   type GroupResponse,
   type GroupVariant,
@@ -95,6 +96,7 @@ import type { RunManager } from '../workflows/run.ts';
 import { removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { getBranches, getCommit, getDiff, getLog, getRepoInfo, getStatus } from './git.ts';
+import { claimRepoGitMutation, localPullBranches, pullRepoCheckout } from './repo-pull.ts';
 import {
   collectChanges,
   collectCommitChanges,
@@ -5081,14 +5083,37 @@ export function createApp(deps: ServerDeps) {
       return c.json(result.changes);
     })
 
+    .get('/repo/pull', async (c) => {
+      const { root } = c.get('project');
+      const result = await localPullBranches(root);
+      if ('error' in result) return c.json(result, 409);
+      return c.json(result);
+    })
+    .post('/repo/pull', jsonZodValidator(repoPullInputSchema), async (c) => {
+      const { root, store, manager } = c.get('project');
+      const info = await getRepoInfo(root);
+      if (!info) return c.json({ error: 'not a git repository' }, 409);
+      const config = await loadConfig(root);
+      const result = await pullRepoCheckout(info.root, c.req.valid('json'), config.baseBranch,
+        () => store.listRuns().some((run) => manager.isActive(run.id)));
+      if (!result.ok) return c.json(result.value, 409);
+      return c.json(result.value, 200);
+    })
+
     .post('/repo/branch', jsonZodValidator(() => repoBranchSchema), async (c) => {
       const { root: repoRoot } = c.get('project');
       const info = await getRepoInfo(repoRoot);
       if (!info) return c.json({ error: 'not a git repository' }, 409);
-      const parsed = { data: c.req.valid('json') };
-      const result = await createOrSwitchBranch(info.root, parsed.data.name, parsed.data.from);
-      if (!result.ok) return c.json({ error: result.error }, 409);
-      return c.json({ branch: result.branch, created: result.created });
+      const release = claimRepoGitMutation(info.root);
+      if (!release) return c.json({ error: 'A Git operation is already in progress for this repository.' }, 409);
+      try {
+        const input = c.req.valid('json');
+        const result = await createOrSwitchBranch(info.root, input.name, input.from);
+        if (!result.ok) return c.json({ error: result.error }, 409);
+        return c.json({ branch: result.branch, created: result.created });
+      } finally {
+        release();
+      }
     });
 
   // The Settings → Agents knobs in one read (R6 Step 1.5) — an ADDITIVE
