@@ -50,6 +50,7 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedBody<'/api/v1/workflows/parse', '$post'>>,
     Assert<HasTypedBody<'/api/v1/worktrees/reclaim', '$post'>>,
     Assert<HasTypedBody<'/api/v1/repo/branch', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/repo/pull', '$post'>>,
     Assert<HasTypedBody<'/api/v1/providers/connect', '$post'>>,
     Assert<HasTypedBody<'/api/v1/providers/:provider/enabled', '$put'>>,
     Assert<HasTypedBody<'/api/v1/providers/:provider/retry', '$post'>>,

@@ -62,6 +62,36 @@ export const repoBranchResponseSchema = z.object({
 });
 export type RepoBranchResponse = z.infer<typeof repoBranchResponseSchema>;
 
+/** Local branches eligible for the project checkout's Pull picker. */
+export const repoPullBranchesResponseSchema = z.object({ branches: z.array(z.string()) });
+export type RepoPullBranchesResponse = z.infer<typeof repoPullBranchesResponseSchema>;
+
+export const repoPullInputSchema = z.object({
+  branch: z.string().trim().min(1).max(200).optional(),
+  confirm: z.boolean().optional(),
+});
+export type RepoPullInput = z.infer<typeof repoPullInputSchema>;
+
+export const repoPullResponseSchema = z.object({
+  branch: z.string(),
+  pulled: z.literal(true),
+  summary: z.string(),
+});
+export type RepoPullResponse = z.infer<typeof repoPullResponseSchema>;
+
+/** A 409 that can be retried after acknowledging the named risks. */
+export const repoPullConfirmationSchema = z.object({
+  error: z.string(),
+  branch: z.string(),
+  risks: z.array(z.enum(['active_runs', 'dirty_tree'])),
+});
+export type RepoPullConfirmation = z.infer<typeof repoPullConfirmationSchema>;
+export const repoPullErrorSchema = z.union([
+  repoPullConfirmationSchema,
+  z.object({ error: z.string() }),
+]);
+export type RepoPullError = z.infer<typeof repoPullErrorSchema>;
+
 /** The aggregate line counts every structured-diff payload carries. Module-local: the runs family
  *  carries its own `DiffStat` of the same shape, and two `export`s of one name would collide when
  *  `contract/index.ts` re-exports both files. */

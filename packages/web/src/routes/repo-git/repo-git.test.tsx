@@ -104,7 +104,7 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 /** Fetch stub in the house style (task-changes.test.tsx): records requests, serves the repo
  *  fixtures, and lets a test override specific `METHOD path` keys. */
-function stubFetch(overrides: Record<string, () => Response> = {}): SentRequest[] {
+function stubFetch(overrides: Record<string, () => Response | Promise<Response>> = {}): SentRequest[] {
   const sent: SentRequest[] = []
   vi.stubGlobal(
     'fetch',
@@ -115,6 +115,7 @@ function stubFetch(overrides: Record<string, () => Response> = {}): SentRequest[
       const override = overrides[`${method} ${path}`]
       if (override) return override()
       if (method === 'GET' && path === '/api/v1/repo') return jsonResponse(REPO)
+      if (method === 'GET' && path === '/api/v1/repo/pull') return jsonResponse({ branches: ['feature', 'main'] })
       if (method === 'GET' && path === '/api/v1/repo/changes') return jsonResponse(CHANGES)
       if (method === 'GET' && path === '/api/v1/repo/commit/abc1234?structured=1') return jsonResponse(COMMIT)
       if (method === 'GET' && path === '/api/v1/health') return jsonResponse(HEALTH)
@@ -123,6 +124,14 @@ function stubFetch(overrides: Record<string, () => Response> = {}): SentRequest[
     }),
   )
   return sent
+}
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void
+  const promise = new Promise<Response>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
 }
 
 /** Cold-load the repo view at a URL, with the same route map routes.tsx registers. */
@@ -230,6 +239,222 @@ describe('the repo view Changes segment', () => {
       expect(screen.getByRole('heading', { level: 1, name: 'Not a git repository' })).toBeTruthy(),
     )
     expect(document.querySelector('[data-slot="repo-tabs"]')).toBeNull()
+  })
+})
+
+// ---- pull -------------------------------------------------------------------------------------
+
+describe('the repo header pull control', () => {
+  it('defaults to the configured base branch and explains that a different branch stays checked out', async () => {
+    stubFetch({
+      'GET /api/v1/repo': () => jsonResponse({ ...REPO, baseBranch: 'feature' }),
+    })
+    renderAt('/git')
+
+    const picker = (await screen.findByLabelText('Branch to pull')) as HTMLSelectElement
+    await waitFor(() => expect([...picker.options].map((option) => option.value)).toEqual(['feature', 'main']))
+    expect(picker.value).toBe('feature')
+    expect(screen.getByRole('button', { name: /^Switch & pull$/ })).toBeTruthy()
+    expect(document.querySelector('[data-slot="repo-pull-note"]')?.textContent).toContain(
+      'feature stays checked out',
+    )
+  })
+
+  it('falls back to the checked-out branch and changes the action label with the picker', async () => {
+    stubFetch()
+    renderAt('/git')
+
+    const picker = (await screen.findByLabelText('Branch to pull')) as HTMLSelectElement
+    const pullButton = screen.getByRole('button', { name: /^Pull$/ }) as HTMLButtonElement
+    await waitFor(() => expect(pullButton.disabled).toBe(false))
+    expect(picker.value).toBe('main')
+
+    fireEvent.change(picker, { target: { value: 'feature' } })
+    expect(screen.getByRole('button', { name: /^Switch & pull$/ })).toBeTruthy()
+    expect(document.querySelector('[data-slot="repo-pull-note"]')?.textContent).toContain(
+      'feature stays checked out',
+    )
+  })
+
+  it('keeps a nonlocal configured default visible but cannot pull it', async () => {
+    stubFetch({
+      'GET /api/v1/repo': () => jsonResponse({ ...REPO, baseBranch: 'origin/release' }),
+    })
+    renderAt('/git')
+
+    const picker = (await screen.findByLabelText('Branch to pull')) as HTMLSelectElement
+    await waitFor(() => expect([...picker.options].map((option) => option.value)).toEqual([
+      'origin/release',
+      'feature',
+      'main',
+    ]))
+    const unavailable = picker.options[0]!
+    expect(unavailable.disabled).toBe(true)
+    expect(picker.value).toBe('origin/release')
+    const button = screen.getByRole('button', { name: /^Switch & pull$/ }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.title).toContain('not a local branch')
+    expect(document.querySelector('[data-slot="repo-pull-note"]')?.textContent).toContain(
+      'Choose a local branch',
+    )
+
+    fireEvent.change(picker, { target: { value: 'main' } })
+    expect(button.disabled).toBe(false)
+    expect([...picker.options].filter((option) => !option.disabled).map((option) => option.value)).toEqual([
+      'feature',
+      'main',
+    ])
+  })
+
+  it.each([
+    ['active_runs', 'active session'],
+    ['dirty_tree', 'dirty files'],
+  ] as const)('asks for explicit confirmation when the server reports %s', async (risk, copy) => {
+    let attempts = 0
+    const sent = stubFetch({
+      'POST /api/v1/repo/pull': () => {
+        attempts += 1
+        return attempts === 1
+          ? jsonResponse({ error: 'Confirmation required', branch: 'main', risks: [risk] }, 409)
+          : jsonResponse({ branch: 'main', pulled: true, summary: 'Already up to date.' })
+      },
+    })
+    renderAt('/git')
+
+    const pullButton = (await screen.findByRole('button', { name: /^Pull$/ })) as HTMLButtonElement
+    await waitFor(() => expect(pullButton.disabled).toBe(false))
+    fireEvent.click(pullButton)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain(copy)
+    fireEvent.click(screen.getByRole('button', { name: 'Pull anyway' }))
+
+    await waitFor(() => expect(attempts).toBe(2))
+    const posts = sent.filter((request) => request.method === 'POST' && request.path === '/api/v1/repo/pull')
+    expect(posts.map((request) => request.body)).toEqual([
+      { branch: 'main' },
+      { branch: 'main', confirm: true },
+    ])
+  })
+
+  it('shows both reported risks and Cancel leaves the repository untouched', async () => {
+    let attempts = 0
+    stubFetch({
+      'POST /api/v1/repo/pull': () => {
+        attempts += 1
+        return jsonResponse(
+          { error: 'Confirmation required', branch: 'main', risks: ['active_runs', 'dirty_tree'] },
+          409,
+        )
+      },
+    })
+    renderAt('/git')
+
+    const pullButton = (await screen.findByRole('button', { name: /^Pull$/ })) as HTMLButtonElement
+    await waitFor(() => expect(pullButton.disabled).toBe(false))
+    fireEvent.click(pullButton)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain('active session')
+    expect(dialog.textContent).toContain('dirty files')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(attempts).toBe(1)
+  })
+
+  it('returns keyboard focus to Pull after cancelling the confirmation dialog', async () => {
+    stubFetch({
+      'POST /api/v1/repo/pull': () =>
+        jsonResponse({ error: 'Confirmation required', branch: 'main', risks: ['dirty_tree'] }, 409),
+    })
+    renderAt('/git')
+
+    const pullButton = (await screen.findByRole('button', { name: /^Pull$/ })) as HTMLButtonElement
+    await waitFor(() => expect(pullButton.disabled).toBe(false))
+    pullButton.focus()
+    expect(document.activeElement).toBe(pullButton)
+    fireEvent.click(pullButton)
+    await screen.findByRole('alertdialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(pullButton))
+  })
+
+  it('pulls a clean checkout without a dialog, toasts the summary, and refreshes repo and health', async () => {
+    const sent = stubFetch({
+      'POST /api/v1/repo/pull': () =>
+        jsonResponse({ branch: 'main', pulled: true, summary: 'Fast-forwarded by 2 commits.' }),
+    })
+    renderAt('/git/branches')
+    await screen.findByLabelText('Branch to pull')
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: /^Pull$/ }) as HTMLButtonElement).disabled).toBe(false),
+    )
+    await waitFor(() => expect(sent.some((request) => request.path === '/api/v1/health')).toBe(true))
+    const repoReadsBefore = sent.filter((request) => request.path === '/api/v1/repo').length
+    const healthReadsBefore = sent.filter((request) => request.path === '/api/v1/health').length
+
+    fireEvent.click(screen.getByRole('button', { name: /^Pull$/ }))
+
+    await waitFor(() => expect(document.body.textContent).toContain('Fast-forwarded by 2 commits.'))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    await waitFor(() => {
+      expect(sent.filter((request) => request.path === '/api/v1/repo').length).toBeGreaterThan(repoReadsBefore)
+      expect(sent.filter((request) => request.path === '/api/v1/health').length).toBeGreaterThan(healthReadsBefore)
+    })
+  })
+
+  it('surfaces an ordinary pull error and still refreshes repo and health after the attempted mutation', async () => {
+    const sent = stubFetch({
+      'POST /api/v1/repo/pull': () => jsonResponse({ error: 'No upstream configured for feature' }, 409),
+    })
+    renderAt('/git/branches')
+    const picker = (await screen.findByLabelText('Branch to pull')) as HTMLSelectElement
+    await waitFor(() => expect(picker.disabled).toBe(false))
+    await waitFor(() => expect(sent.some((request) => request.path === '/api/v1/health')).toBe(true))
+    fireEvent.change(picker, { target: { value: 'feature' } })
+    const repoReadsBefore = sent.filter((request) => request.path === '/api/v1/repo').length
+    const healthReadsBefore = sent.filter((request) => request.path === '/api/v1/health').length
+
+    fireEvent.click(screen.getByRole('button', { name: /^Switch & pull$/ }))
+
+    await waitFor(() => expect(document.body.textContent).toContain('No upstream configured for feature'))
+    await waitFor(() => {
+      expect(sent.filter((request) => request.path === '/api/v1/repo').length).toBeGreaterThan(repoReadsBefore)
+      expect(sent.filter((request) => request.path === '/api/v1/health').length).toBeGreaterThan(healthReadsBefore)
+    })
+  })
+
+  it('keeps the control in place and disables both inputs while a pull is pending', async () => {
+    const pending = deferredResponse()
+    stubFetch({ 'POST /api/v1/repo/pull': () => pending.promise })
+    renderAt('/git')
+    const picker = (await screen.findByLabelText('Branch to pull')) as HTMLSelectElement
+    const button = screen.getByRole('button', { name: /^Pull$/ }) as HTMLButtonElement
+    await waitFor(() => expect(button.disabled).toBe(false))
+
+    fireEvent.click(button)
+    await waitFor(() => expect(button.disabled).toBe(true))
+    expect(picker.disabled).toBe(true)
+    expect(document.querySelector('[data-slot="repo-pull"]')).not.toBeNull()
+
+    pending.resolve(jsonResponse({ branch: 'main', pulled: true, summary: 'Already up to date.' }))
+    await waitFor(() => expect(button.disabled).toBe(false))
+  })
+
+  it('disables pulling with an actionable reason when no remote is configured', async () => {
+    const sent = stubFetch({
+      'GET /api/v1/repo': () => jsonResponse({ ...REPO, info: { ...REPO.info!, remote: null } }),
+    })
+    renderAt('/git')
+
+    const button = (await screen.findByRole('button', { name: /^Pull$/ })) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.title).toContain('No remote configured')
+    expect(document.querySelector('[data-slot="repo-pull-note"]')?.textContent).toContain(
+      'Add a Git remote',
+    )
+    expect(sent.some((request) => request.path === '/api/v1/repo/pull')).toBe(false)
   })
 })
 

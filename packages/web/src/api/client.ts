@@ -73,6 +73,10 @@ import type {
   UpdateProjectResponse,
   RemoveTodoResponse,
   RepoBranchResponse,
+  RepoPullBranchesResponse,
+  RepoPullConfirmation,
+  RepoPullInput,
+  RepoPullResponse,
   RepoCommitPayload,
   RunCommitsResponse,
   RunHistoryContext,
@@ -111,6 +115,9 @@ import {
   queryScope,
   runHistoryContextSchema,
   runHistoryPageSchema,
+  repoPullBranchesResponseSchema,
+  repoPullConfirmationSchema,
+  repoPullResponseSchema,
 } from '@open-mercato/cezar-api-client'
 import type { Ok, OkJson } from '@open-mercato/cezar-api-client'
 import type { ClientResponse } from 'hono/client'
@@ -643,6 +650,51 @@ export async function getRepo(opts?: ReadOptions): Promise<RepoResponse> {
     await cez.api.v1.p[':projectId'].repo.$get({ param: { projectId: queryScope() } }, init(opts)),
     '/repo',
   )
+}
+
+/** Local branches eligible for the Git header's pull target picker. */
+export async function getRepoPullBranches(opts?: ReadOptions): Promise<RepoPullBranchesResponse> {
+  return unwrapValidated(
+    await cez.api.v1.p[':projectId'].repo.pull.$get(
+      { param: { projectId: queryScope() } },
+      init(opts),
+    ),
+    '/repo/pull',
+    repoPullBranchesResponseSchema,
+  )
+}
+
+/**
+ * Switch to (when needed) and pull one local branch. A structured 409 is an expected decision
+ * point for the UI, while every other refusal keeps the client-wide ApiError contract.
+ */
+export async function pullRepo(
+  input: RepoPullInput,
+): Promise<RepoPullResponse | RepoPullConfirmation> {
+  const response = await cez.api.v1.p[':projectId'].repo.pull.$post({
+    param: { projectId: queryScope() },
+    json: input,
+  })
+  // The route type knows only its own 200/409 answers. The transport can still receive any HTTP
+  // status from a proxy or stale server, so keep that runtime fallback typed as the Response it is.
+  const transport = response as Response
+  const body = await transport.text()
+  const parsed = parseJson(body)
+
+  if (transport.status === 409) {
+    const confirmation = repoPullConfirmationSchema.safeParse(parsed)
+    if (confirmation.success) return confirmation.data
+    throw errorFor(transport.status, transport.statusText, body)
+  }
+  if (!transport.ok) throw errorFor(transport.status, transport.statusText, body)
+  if (parsed === undefined) {
+    throw new ApiError(transport.status, 'the cezar server answered /repo/pull with a non-JSON body')
+  }
+  const result = repoPullResponseSchema.safeParse(parsed)
+  if (!result.success) {
+    throw new ApiError(transport.status, 'the cezar server answered /repo/pull with an unexpected body')
+  }
+  return result.data
 }
 
 /** The Settings → Agents knobs in one read (`GET /api/config`, additive R6 route). */
