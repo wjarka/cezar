@@ -336,10 +336,9 @@ export function ThreadView({
           )
         ) : null}
 
-        {/* Live session heartbeat: while the engine owns the turn (`running`), a spinner tails
-            the thread so quiet gaps between bursts don't read as "finished". `waiting` hands
-            off to the dock's reply hint, `queued` to the placeholder above — so `running` only. */}
-        {run.status === 'running' ? <WorkingIndicator /> : null}
+        {/* Live turn heartbeat: quiet gaps between bursts still show progress. Monitoring
+            keeps `running` while parked, so it must not show the working spinner. */}
+        {run.status === 'running' && run.activity !== 'monitoring' ? <WorkingIndicator /> : null}
 
         {/* Closed states read as the body's last line; the WAITING state lives in the dock
             (mockup `.paused-hint`), right above the composer it is asking the user to use. */}
