@@ -22,6 +22,9 @@ answer the shared scenario catalog and pass every row".
 | Q2 | A cell a backend cannot satisfy? | A declared `PARITY_EXEMPTIONS` entry carrying a reason, asserted INVERTED so a stale exemption fails. | An `it.skip` is invisible; an inverted assertion is a ratchet. AC #6 needs exemptions to be data the suite validates, not a comment. | confirmed by owner |
 | Q3 | What transport drives a row? | Each backend's real runner class against its own existing mock binary, selected by the `CEZ_*_BIN` var it already reads. | A test-owned fake transport would be a second wire-shape source of truth, drifting from the mocks. `AGENT_PROTOCOL.md` §7 names that drift as PR #443's root cause. | ok |
 | Q4 | Shared scenario names, or shared markers? | Shared NAMES; the adapter maps each to that backend's own `mock:` spelling. | Renaming `mock:turn-failed` or `mock:auth-error` would churn passing runner tests for no gain, and the existing markers are already wire-faithful. | ok |
+| Q6 | S3 — every backend echoes a `session` event? | No: the criterion is a RESUMABLE id, from the v1 `session` event or the settled `AgentRunResult`. | Codex, opencode and pi mint their own id and echo it; claude pins the id cezar supplied (`--session-id`) and returns it. Both are how `resumeCommand()` gets an id, and demanding the event would have failed claude for conforming to its own documented wire. | applied during implementation |
+| Q7 | S7 — every backend emits `session.error`? | No: v2 must signal the failure, and the CHANNEL is per-wire. | opencode and pi have a session-level error frame, codex reports a failed turn, claude has only the result envelope's stop reason. What #53 and #54 both WERE is the run looking finished, so that is what the row pins. | applied during implementation |
+| Q8 | R1 — does a clean run reach a terminal status? | Only when the agent DECLARES completion, so R1 needs its own `done` scenario. | A markerless turn-end parks as `waiting` on every backend, and that is correct cezar behaviour. R1's first draft asserted a terminal status off `baseline` and failed all four for the wrong reason. | applied during implementation |
 | Q5 | New env var for the matrix? | None. | The four mock selectors (`CEZ_CLAUDE_BIN`, `CEZ_CODEX_BIN`, `CEZ_OPENCODE_BIN`, `CEZ_PI_BIN`) already exist and are documented. Zero-config: never trade a working default for a knob. | ok |
 
 ## Problem Statement
@@ -131,7 +134,8 @@ The catalog:
 
 | Scenario | The mock must | Rows it serves |
 |---|---|---|
-| `baseline` | one text, one tool call and result, usage, then the backend's terminal turn signal | the seam contract rows, R1 |
+| `baseline` | one text, one tool call and result, usage, then the backend's terminal turn signal | the seam contract rows |
+| `done` | the same, with a trailing `CEZ:DONE` | R1 |
 | `hold` | delay the terminal turn signal ~250 ms AFTER the last content event | S2 |
 | `split-text` | stream the reply as three or more token-sized deltas, ending with a trailing `CEZ:MONITORING` | S8, R5 |
 | `provider-error` | a runtime provider rejection in the backend's native error shape | S7, R2 |
@@ -150,11 +154,11 @@ Driven by `driveSeam()`: the real runner class, a real child process, the real m
 |---|---|---|---|
 | S1 | `baseline` | exactly one v1 `done`, and it is the last event | 7 |
 | S2 | `hold` | the turn ends on the backend's own terminal signal, after the last content event; exactly one `turn.completed` | 2 |
-| S3 | `baseline` | a v1 `session` event carries a non-empty backend session id | 7 |
+| S3 | `baseline` | a resumable session id, from the v1 `session` event or the settled result (Q6) | 7 |
 | S4 | `baseline` | v1 `token-usage` above zero AND a v2 `usage.updated` | 7 |
 | S5 | `baseline` ×2 | `sendMessage` returns true while `open`, and a second turn completes | 7 |
 | S6 | `baseline` | `interrupt()` settles `result` with no v1 `error` and no `turn.completed` carrying `stopReason: 'error'` | 7 |
-| S7 | `provider-error` | a v1 `error` with a non-empty message AND a v2 `session.error`; no clean `end_turn` | 1 |
+| S7 | `provider-error` | a v1 `error` with a non-empty message, a v2 signal of the failure, and never a clean `end_turn` (Q7) | 1 |
 | S8 | `split-text` | the deltas coalesce into ONE v1 `text` holding the whole string, with the trailing marker intact under `/CEZ:MONITORING\s*$/` | 5, 6 |
 | S9 | `subagent` | the parent turn ends exactly once, after the child's content — a child terminal signal never ends the parent | 4 |
 | S10 | `baseline` | `session.pid` is a number while the session is open | 7 |
@@ -172,7 +176,7 @@ Driven by `driveRun()`: a real `RunManager` run in a temp git repo, the shape
 
 | Row | Scenario | Asserts | Group |
 |---|---|---|---|
-| R1 | `baseline` | the run reaches a terminal non-attention status (`review` or `done`), never `waiting` | 7 |
+| R1 | `done` | a declared-complete run reaches the review gate, never `waiting` (Q8) | 7 |
 | R2 | `provider-error` | the run reaches `failed`, and `waiting` is never observed on the way | 1 |
 | R3 | `ask` | status `waiting`, and exactly one `ask.requested` carrying at least one question | 3 |
 | R4 | `ask-bad` | the run reaches a terminal status and emits no `ask.requested` | 3 |
@@ -191,11 +195,24 @@ one that shipped the bug.
 }
 ```
 
+**Two kinds, because inversion is not always meaningful.** The first draft had one, and pi/S9 broke
+it: pi's RPC has no child session, so an unrelated baseline turn satisfies S9 by accident and the
+inverted assertion fails for a backend that is behaving correctly. So an entry declares which case
+it is:
+
+- `capability-absent` — the scenario IS constructible; the backend just does not produce the signal.
+  Pinned by the inverted assertion below.
+- `scenario-unconstructible` — the wire cannot create the situation at all. Pinned by requiring the
+  adapter to declare NO prompt for that scenario, so the day a mock answers it the exemption fails
+  and the row must go live.
+
+A guard asserts the kind and the declared prompt agree, so a contradictory entry cannot land.
+
 Three rules, each executable:
 
-1. **Inverted assertion.** An exempt cell still produces a named test, which asserts the capability
-   really is absent. A mock that later grows it fails its own exemption, forcing the entry's removal.
-   A stale exemption cannot sit green.
+1. **Inverted assertion** (`capability-absent`). An exempt cell still produces a named test, which
+   asserts the capability really is absent. A mock that later grows it fails its own exemption,
+   forcing the entry's removal. A stale exemption cannot sit green.
 2. **Total coverage.** A guard test asserts every `(criterion, backend)` pair is either a live row or
    an exemption. A new id in `RUNNER_IDS` therefore fails the suite until every row is addressed,
    which is AC #6 made mechanical rather than procedural.
@@ -230,6 +247,22 @@ That keeps the suite inside AGENTS.md's "no server, no browser" fast-gate rule �
 what `workflows/run.test.ts` already does — but it is the change's whole runtime cost and it is
 deliberate: the owner chose the orchestrator tier precisely because groups 1, 3 and 6 are not uniform
 below it.
+
+## What the matrix found
+
+Authoring it turned up one real defect, which is the point rather than a side effect.
+`resultStopReason` in `claude-ui-mapper.ts` matched on the result subtype first, so `success`
+returned `end_turn` and never consulted `is_error` — and Claude Code reports a revoked credential in
+an `is_error: true` result whose subtype is still `success`. v1 emitted the error correctly, so the
+run failed, but the cockpit was told the auth failure was a clean end of turn. That is group 1 on
+claude's wire, unfixed after #53 and #54 fixed it on opencode and pi, and no test covered it. Row S7
+is what found it; the fix ships in the same branch, with its own `resultStopReason` case.
+
+Every row was verified red by reintroducing the defect it pins — ending the opencode turn on its
+`prompt_async` ack (#4), publishing each delta as its own v1 `text` (#2), suppressing pi's provider
+error (#54), letting any `session.idle` close the parent turn (#600), ignoring a malformed codex
+`requestUserInput` (a wedge), and reverting the claude fix above. The three guard tests were verified
+red the same way.
 
 ## Out of Scope
 

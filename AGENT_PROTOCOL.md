@@ -105,7 +105,7 @@ which seeds from `exitCode`/`signalCode` and listens for `exit`.
 - `onUiEvent?: (e: UiEvent) => void` — the **v2 channel**. It receives the
   normalized `UiEvent` stream emitted alongside the v1 `AgentEvent`s passed to
   `onEvent`. A runner that omits `onUiEvent` support degrades to v1-only — but a
-  first-class backend MUST wire it (see §7).
+  first-class backend MUST wire it (see §8).
 
 ### `AgentRunSpec`
 
@@ -344,7 +344,79 @@ or a new fixture set forgets one — a named row fails. The matrix:
 
 A new backend is not "done" until it produces every row.
 
-## 7. The golden-fixture testing contract
+That covers what a mapper EMITS. The other half of the same requirement — what a
+runner DOES — is §7, and a new backend has to satisfy both.
+
+## 7. Harness parity — session and lifecycle (`packages/cezar/src/core/harness-parity.test.ts`)
+
+> Every criterion in the harness parity matrix MUST hold for **every** backend,
+> or carry a declared exemption naming the wire limitation that prevents it.
+
+§6 pins what a mapper emits. This pins the rest of the contract in
+`agent-runner.ts`: session lifecycle, provider-failure surfacing, `sendMessage`,
+ask routing and park declarations. It exists because nine fixes (#2, #3, #4, #5,
+#6, #46, #48, #53, #54) each repaired a failure mode on ONE backend that no
+shared contract covered, so the same class of bug shipped again on the next one.
+
+**Two tiers.** The seam tier drives each real runner class against that
+backend's own offline mock and asserts over the v1 and v2 streams plus the
+settled result. The run tier drives a real `RunManager` run in a temp git repo.
+The second tier is not redundant: `ask.requested` is emitted by the RUNNER for
+codex and opencode (`codex-app-server-runner.ts`, `opencode-server-runner.ts`)
+and by `workflows/run.ts` for claude and pi, and whether a provider failure
+fails the run or parks it is decided in the orchestrator either way. Provider
+failures, asks and park declarations are only uniform above the seam.
+
+**Shared scenario names, per-backend spellings.** Every mock is already driven by
+`mock:<scenario>` markers found in the prompt text. The matrix names a scenario
+once and `HARNESS_ADAPTERS` maps that name onto whatever a backend already calls
+it, so no existing marker is renamed. A new runner declares its own map:
+
+| Scenario | The mock must |
+| --- | --- |
+| `baseline` | one text, one tool call and result, usage, then its terminal turn signal |
+| `done` | the same, with a trailing `CEZ:DONE` so the run reaches its review gate |
+| `hold` | acknowledge the prompt, then pause before the content AND the terminal signal |
+| `split-text` | stream the reply in pieces, ending with a trailing `CEZ:MONITORING` |
+| `provider-error` | a runtime provider rejection in its own native error shape |
+| `ask` | an ask — native where the wire has one, a `CEZ:ASK` marker otherwise |
+| `ask-bad` | a malformed ask, and then still end the turn |
+| `subagent` | child work, and a child terminal signal the parent turn must survive |
+
+New scenarios are **wire-faithful** on the same terms as the golden fixtures
+(§8): derive the shape from that backend's real transcripts and cite the source.
+A scenario invented from assumption is #443 repeating inside the suite meant to
+prevent it.
+
+**Exemptions are data the suite validates, never an `it.skip`.** An entry in
+`PARITY_EXEMPTIONS` carries a reason describing the WIRE limitation — "not
+implemented yet" is a failing row, and the fix is the runner. Each entry has a
+kind, because the two cases cannot be pinned the same way:
+
+- `capability-absent` — the scenario is constructible, the backend just does not
+  produce the signal. Pinned by an **inverted** assertion: the criterion must not
+  hold, so a backend that later gains it fails its own exemption.
+- `scenario-unconstructible` — the wire cannot create the situation at all, so
+  there is nothing to invert (an unrelated baseline turn would satisfy some
+  criteria by accident). Pinned by requiring the adapter to declare **no** prompt
+  for that scenario, so the day a mock answers it the exemption fails and the row
+  has to go live.
+
+Guard tests assert every `(criterion, backend)` pair is a live row or an
+exemption, that a kind agrees with whether a prompt is declared, and that the
+file contains no skipped cell. A new id in `RUNNER_IDS` therefore fails the suite
+until every row is addressed.
+
+**The matrix is a debugging tool, not only a gate.** Every row names the issue
+whose failure mode it pins, and each was verified red by reintroducing that
+defect. A red row is first evidence of a real bug, not of a bad assertion:
+authoring this matrix is what found the claude half of group 1, where an
+`is_error` result whose subtype is still `success` reported an auth failure to
+the cockpit as a clean end of turn.
+
+---
+
+## 8. The golden-fixture testing contract
 
 Each backend has, under `packages/cezar/src/core/__fixtures__/<backend>/`:
 
@@ -366,7 +438,7 @@ these events get persisted as NDJSON), and asserts `toStrictEqual` against the
 > where a codex plan never rendered at all. When adding a fixture, cite the
 > upstream schema/source it was derived from, as #443 did.
 
-## 8. Persistence & transport
+## 9. Persistence & transport
 
 - **NDJSON** — one append-only `runs/<id>.ndjson` per run, one JSON object per
   line (`seq`, `ts`, `type`, free extra keys). Never rewrite, reorder or
@@ -381,10 +453,10 @@ these events get persisted as NDJSON), and asserts `toStrictEqual` against the
 
 ---
 
-## 9. Adding a new runner (the #387 `pi` checklist)
+## 10. Adding a new runner (the #387 `pi` checklist)
 
 A new backend is a **single class behind the seam** plus its mapper, fixtures and
-the parity row — never backend-specific types leaking past
+its rows in **both** parity matrices — never backend-specific types leaking past
 `packages/cezar/src/core/`. PR #387 added `pi` and enumerated every place the
 runner union was duplicated; that list is the concrete map, and the union now
 derives from one `RUNNER_IDS` tuple in `agent-runner.ts` so most of it is
@@ -416,21 +488,28 @@ To be first-class:
 7. **Parity** — add the id to `BACKENDS` in `ui-parity.test.ts`; every capability
    row must pass. (If the backend has no wire parent attribution, document the
    nesting cell's substitute the way codex's review-mode items are handled.)
-8. **Plumbing** — the run-store `runner` enum, workflow step schema, the
+8. **Harness parity** — add the runner to `HARNESS_ADAPTERS`
+   (`packages/cezar/src/core/harness-parity.testkit.ts`): the env var that points it at an
+   offline mock, and a prompt for every name in the shared scenario catalog (§7). Then make
+   that mock answer them, in the backend's own wire shape. **Every matrix row must pass** —
+   the guard tests fail the suite until each `(criterion, runner)` cell is a live row or a
+   declared `PARITY_EXEMPTIONS` entry naming the wire limitation. Never an `it.skip`, and
+   never "not implemented yet".
+9. **Plumbing** — the run-store `runner` enum, workflow step schema, the
    `POST /api/runs` / `PUT /api/config` bodies, `resumeCommand()`, the web
    `Runner` type, composer pills/presets, and Settings → Agents. Keep additive
    so old `runs.json` records still parse (the `runner` enum keeps `claude-cli`
    parseable — follow that precedent).
-9. **Model selection** — accept `provider/model` where relevant; #387 documents
+10. **Model selection** — accept `provider/model` where relevant; #387 documents
    the existing inconsistencies (opencode drops a bare model silently) — do not
    reproduce a silent-drop. A backend with no default provider gets no entry in
    `BACKEND_MODEL_MAP`'s default column, so a bare id fails loud.
-10. **Credentials** — one entry in `BACKEND_ALLOW_PREFIXES` (`agent-env.ts`):
+11. **Credentials** — one entry in `BACKEND_ALLOW_PREFIXES` (`agent-env.ts`):
    `buildChildEnv` is least-privilege per backend, so a multi-provider runner
    must receive credentials for every provider its own model ids can name
    without widening other backends.
 
-## 10. The plan channel (PR #443)
+## 11. The plan channel (PR #443)
 
 PR #443 (`fix/issue-433-render-plan-todo`, open at the time of writing) hardens
 `plan.updated` across all three backends after finding the plan never reached the
@@ -465,6 +544,7 @@ breaking change requiring the documented deprecation path.
 
 ## Related documents
 
+- `.ai/specs/2026-09-04-harness-parity-matrix.md` — the harness parity matrix's design record (§7).
 - `AGENTS.md` — repo working rules; the "Agent runners / backends" routing row.
 - `BACKWARD_COMPATIBILITY.md` — §7 (this protocol) and §2/§3 (SSE names, NDJSON).
 - `.ai/analysis/cockpit-ui-redesign/agent-event-protocols.md` — the deep design record (§7, §7.1).
