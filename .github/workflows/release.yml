@@ -18,18 +18,23 @@ on:
           - major
           - existing
 
+# Default-read at the workflow level; the publish job elevates what it needs.
+# Verify stays read-only so a suite run never holds the release OIDC token.
 permissions:
-  contents: write # create the release tag + GitHub Release via the API
-  id-token: write # npm trusted publishing (OIDC) + provenance
-  pull-requests: write # open the version-bump PR for patch/minor/major releases
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Release ${{ inputs.bump }} to npm (latest)
+  # Vitest's github-actions reporter appends `## Vitest Test Report` to
+  # $GITHUB_STEP_SUMMARY. Keeping Verify in the same job as Publish meant a
+  # registry blip after a green suite failed the whole job and, on re-run,
+  # left a second / false-failing report next to the passing one (#62).
+  # Split like ci.yml: the suite owns one green job; publish is a dependent.
+  verify:
+    name: Verify before release
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Releases from `main` (the stable trunk) or a `release/*` maintenance branch —
@@ -38,10 +43,48 @@ jobs:
     # workflow_dispatch reads this file from the ref it runs on, and a tag's copy is
     # frozen, so a tag would still evaluate the old gate.
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run server and cockpit unit suites
+        run: npm test
+
+      - name: Build application
+        run: npm run build
+
+  release:
+    name: Release ${{ inputs.bump }} to npm (latest)
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
     # Gate the publish behind a required-reviewer approval. If the environment
     # isn't configured yet, GitHub creates it on first use without reviewers
     # (non-blocking); add reviewers at Settings → Environments → production.
     environment: production
+    permissions:
+      contents: write # create the release tag + GitHub Release via the API
+      id-token: write # npm trusted publishing (OIDC) + provenance
+      pull-requests: write # open the version-bump PR for patch/minor/major releases
 
     steps:
       - name: Check out repository
@@ -58,12 +101,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Verify before release
-        run: |
-          npm run typecheck
-          npm run test:unit
-          npm test
 
       - name: Build application
         run: npm run build
