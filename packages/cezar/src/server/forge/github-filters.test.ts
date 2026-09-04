@@ -1,0 +1,117 @@
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+const run = vi.hoisted(() => vi.fn());
+vi.mock('node:child_process', async (original) => ({
+  ...await original<typeof import('node:child_process')>(),
+  execFile: (...args: unknown[]) => run(...args),
+}));
+import { fetchGithub } from './github.ts';
+import { githubDataSchema } from '@open-mercato/cezar-contract';
+const pageInfo = { hasNextPage: false, endCursor: null };
+const board = { id: 'P1', title: 'Delivery', url: 'https://github.com/users/o/projects/1' };
+function mockGh(projectsFail = false, viewerFail = false) {
+  run.mockImplementation((...args: unknown[]) => {
+    const argv = args[1] as string[];
+    const cb = args.at(-1) as (err: unknown, result: unknown) => void;
+    const ok = (v: unknown) => cb(null, { stdout: typeof v === 'string' ? v : JSON.stringify(v), stderr: '' });
+    if (argv[0] === 'repo') return ok('o/r');
+    if (argv[0] === 'issue') return ok([{ number: 1, title: 'Task', author: { login: 'o' }, createdAt: '', labels: [], body: '', url: 'https://github.com/o/r/issues/1', assignees: [{ login: 'alice' }] }]);
+    if (argv[0] === 'pr') return ok([]);
+    const query = argv.find(a => a.startsWith('query=')) ?? '';
+    if (query.includes('viewer')) return viewerFail ? cb(new Error('offline'), null) : ok({ data: { viewer: { login: 'alice' } } });
+    if (query.includes('projectsV2')) return projectsFail ? cb(new Error('scope missing'), null) : ok({ data: { repository: { projectsV2: { nodes: [board], pageInfo } } } });
+    if (query.includes('projectItems')) return ok({ data: { repository: { i1: { projectItems: { nodes: [{ project: { id: 'P1' } }], pageInfo } } } } });
+    return cb(new Error('counts unavailable'), null);
+  });
+}
+beforeEach(() => { vi.stubEnv('CEZ_DRY_RUN', ''); run.mockReset(); });
+afterEach(() => vi.unstubAllEnvs());
+it('delivers assignees, viewer and linked project membership through the list contract', async () => {
+  mockGh();
+  const data = githubDataSchema.parse(await fetchGithub('/filters-test', true));
+  expect(data.available).toBe(true);
+  expect(data.issues[0]).toMatchObject({ assignees: ['alice'], projectIds: ['P1'] });
+  expect(data.viewerLogin).toBe('alice');
+  expect(data.projects).toEqual([board]);
+});
+it('project access failure preserves the issue list, assignees and independent viewer', async () => {
+  mockGh(true);
+  const data = await fetchGithub('/filters-test', true);
+  expect(data.available).toBe(true);
+  expect(data.issues[0]?.assignees).toEqual(['alice']);
+  expect(data.viewerLogin).toBe('alice');
+  expect(data.projects).toBeUndefined();
+  expect(data.projectsReason).toBeTruthy();
+});
+it('viewer failure leaves project filtering usable', async () => {
+  mockGh(false, true);
+  const data = await fetchGithub('/filters-test', true);
+  expect(data.projects).toEqual([board]);
+  expect(data.viewerLogin).toBeUndefined();
+});
+it('dry run includes usable assignment and board fixtures without a subprocess', async () => {
+  vi.stubEnv('CEZ_DRY_RUN', '1');
+  const data = githubDataSchema.parse(await fetchGithub('/dry-filters'));
+  expect(data.viewerLogin).toBeTruthy();
+  expect(data.issues.some(i => i.assignees?.includes(data.viewerLogin!))).toBe(true);
+  expect(data.projects?.length).toBeGreaterThan(0);
+  expect(data.issues.some(i => i.projectIds?.includes(data.projects![0]!.id))).toBe(true);
+  expect(run).not.toHaveBeenCalled();
+});
+
+import { fetchIssueProjects } from './github-filters.ts';
+it('discovers later pages and filters memberships by ID, not duplicate board titles', async () => {
+  const graphql = vi.fn(async (query: string, variables: Record<string, string>) => {
+    if (query.includes('projectsV2')) return JSON.stringify({ data: { repository: { projectsV2: {
+      nodes: [variables.cursor ? { ...board, id: 'P2' } : board],
+      pageInfo: variables.cursor ? pageInfo : { hasNextPage: true, endCursor: 'next' },
+    } } } });
+    return JSON.stringify({ data: { repository: { i1: { projectItems: {
+      nodes: [{ project: { id: 'P2' } }, { project: { id: 'unlinked' } }], pageInfo,
+    } } } } });
+  });
+  expect(await fetchIssueProjects(graphql, 'o', 'r', [1])).toEqual({
+    projects: [board, { ...board, id: 'P2' }], membership: { 1: ['P2'] },
+  });
+});
+it('returns an empty board list without requesting memberships when no projects are linked', async () => {
+  const graphql = vi.fn(async () => JSON.stringify({ data: { repository: { projectsV2: { nodes: [], pageInfo } } } }));
+  expect(await fetchIssueProjects(graphql, 'o', 'r', [1])).toEqual({ projects: [], membership: {} });
+  expect(graphql).toHaveBeenCalledTimes(1);
+});
+it.each(['partial', 'malformed', 'missing-issue', 'membership-cap', 'repeated-cursor'])(
+  'disables board filtering instead of returning false negatives on %s metadata', async failure => {
+    const graphql = vi.fn(async (query: string) => {
+      if (failure === 'malformed') return '{}';
+      if (query.includes('projectsV2')) return JSON.stringify({
+        ...(failure === 'partial' ? { errors: [{ message: 'Forbidden' }] } : {}),
+        data: { repository: { projectsV2: { nodes: [board], pageInfo: failure === 'repeated-cursor' ? { hasNextPage: true, endCursor: 'same' } : pageInfo } } },
+      });
+      return JSON.stringify({ data: { repository: failure === 'missing-issue' ? {} : {
+        i1: { projectItems: { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'more' } } },
+      } } });
+    });
+    expect(await fetchIssueProjects(graphql, 'o', 'r', [1])).toEqual({ projectsReason: expect.any(String) });
+    expect(graphql.mock.calls.length).toBeLessThanOrEqual(3);
+  },
+);
+it('caps discovery even when every cursor advances', async () => {
+  let page = 0;
+  const graphql = vi.fn(async () => JSON.stringify({ data: { repository: { projectsV2: {
+    nodes: [board], pageInfo: { hasNextPage: true, endCursor: String(++page) },
+  } } } }));
+  expect(await fetchIssueProjects(graphql, 'o', 'r', [1])).toHaveProperty('projectsReason');
+  expect(graphql).toHaveBeenCalledTimes(10);
+});
+it('starts discovery while the issue list is still loading', async () => {
+  let resolveNumbers!: (n: number[]) => void;
+  const numbers = new Promise<number[]>(resolve => { resolveNumbers = resolve; });
+  const graphql = vi.fn(async (query: string) => JSON.stringify({ data: { repository: query.includes('projectsV2')
+    ? { projectsV2: { nodes: [board], pageInfo } }
+    : { i1: { projectItems: { nodes: [{ project: { id: 'P1' } }], pageInfo } } },
+  } }));
+  const pending = fetchIssueProjects(graphql, 'o', 'r', () => numbers);
+  await Promise.resolve();
+  expect(graphql).toHaveBeenCalledTimes(1);
+  resolveNumbers([1]);
+  expect(await pending).toEqual({ projects: [board], membership: { 1: ['P1'] } });
+});

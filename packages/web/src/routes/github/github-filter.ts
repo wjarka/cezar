@@ -23,7 +23,7 @@ export function allLabels(items: readonly GithubItem[]): string[] {
  */
 export function filterGithubItems(
   items: readonly GithubItem[],
-  opts: { query?: string; labels?: readonly string[] } = {},
+  opts: { query?: string; labels?: readonly string[]; assignees?: readonly string[]; projectId?: string } = {},
 ): GithubItem[] {
   const query = (opts.query ?? '').trim().toLowerCase()
   const required = opts.labels ?? []
@@ -31,6 +31,8 @@ export function filterGithubItems(
   const idOnly = numeric !== '' && /^\d+$/.test(numeric)
   return items.filter((item) => {
     if (required.length > 0 && !required.every((label) => item.labels.includes(label))) return false
+    if (opts.assignees?.length && !item.assignees?.some(login => opts.assignees!.some(selected => selected.toLowerCase() === login.toLowerCase()))) return false
+    if (opts.projectId && !item.projectIds?.includes(opts.projectId)) return false
     if (query === '') return true
     if (idOnly) return String(item.number).includes(numeric)
     const haystack = `#${item.number} ${item.title} ${item.author} ${item.body}`.toLowerCase()

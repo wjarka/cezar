@@ -73,3 +73,23 @@ describe('labelChipStyle', () => {
     expect(labelChipStyle('000000').color).toBe('color-mix(in srgb, #000000 50%, var(--foreground))')
   })
 })
+
+describe('issue assignment and project filters', () => {
+  const rows = [
+    item({ number: 1, title: 'Fix login', labels: ['bug'], assignees: ['Alice'], projectIds: ['P1'] }),
+    item({ number: 2, title: 'Fix logout', labels: ['bug'], assignees: ['bob'], projectIds: ['P2'] }),
+    item({ number: 3, title: 'Docs', assignees: [], projectIds: [] }),
+    item({ number: 4, title: 'Legacy' }),
+  ]
+  it('matches any selected login case-insensitively, excluding unassigned and legacy rows', () => {
+    expect(filterGithubItems(rows, { assignees: ['alice', 'BOB'] }).map(i => i.number)).toEqual([1, 2])
+  })
+  it('ANDs project membership with assignees, labels and search', () => {
+    expect(filterGithubItems(rows, { assignees: ['alice', 'bob'], projectId: 'P2', labels: ['bug'], query: 'fix' }).map(i => i.number)).toEqual([2])
+    expect(filterGithubItems(rows, { projectId: 'missing' })).toEqual([])
+    expect(filterGithubItems(rows, { projectId: 'P1', query: 'docs' })).toEqual([])
+  })
+  it('keeps legacy and unassigned rows with no filters', () => {
+    expect(filterGithubItems(rows)).toEqual(rows)
+  })
+})
