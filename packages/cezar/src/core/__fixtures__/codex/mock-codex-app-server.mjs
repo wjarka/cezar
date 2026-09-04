@@ -27,7 +27,13 @@ rl.on('line', (line) => {
   } catch {
     return;
   }
-  if (msg.id === 'ask-1' && msg.result) {
+  if (msg.id === 'ask-bad-1' && msg.error) {
+    // The runner rejected the malformed payload with -32602, as it must. A real
+    // app-server carries on from there, so the turn still completes — a mock
+    // that went silent here would make harness parity R4 pass by hanging
+    // instead of by ending the turn.
+    emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+  } else if (msg.id === 'ask-1' && msg.result) {
     const answer = msg.result.answers?.library?.answers;
     const freeText = msg.result.answers?.first?.answers;
     emit((Array.isArray(answer) && answer[0] === 'Vitest') || (Array.isArray(freeText) && freeText[0] === 'Use sensible defaults')
@@ -71,6 +77,16 @@ rl.on('line', (line) => {
       emit({ method: 'item/completed', params: { threadId: 'th_mock_1', turnId: 'turn_mock_1', item: { type: 'agentMessage', id: 'item_sp1', text: full } } });
       emit({ method: 'thread/tokenUsage/updated', params: { threadId: 'th_mock_1', tokenUsage: { total: { totalTokens: 30, inputTokens: 20, outputTokens: 10 }, last: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } } } });
       emit({ method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } });
+      return;
+    }
+    if (turnText.includes('mock:ask-bad')) {
+      // `questions` is not an array of question objects, so `codexAskQuestions`
+      // must reject it: no card renders, and the turn still ends once the
+      // rejection lands above (harness parity R4).
+      emit({ id: 'ask-bad-1', method: 'item/tool/requestUserInput', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_ask_bad', autoResolutionMs: null,
+        questions: 'not-an-array',
+      } });
       return;
     }
     if (turnText.includes('mock:done')) {

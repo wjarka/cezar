@@ -5,6 +5,9 @@ const sessionId = '00000000-0000-4000-8000-0000000000pi';
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** One valid CEZ:ASK payload (spec #473), used by the `mock:ask` scenario. */
+const ASK_MARKER_BODY = "{\"questions\":[{\"header\":\"Library\",\"question\":\"Which test library?\",\"multiSelect\":false,\"options\":[{\"label\":\"Vitest\",\"description\":\"Use the existing test runner\"},{\"label\":\"Node test\",\"description\":\"Use node:test\"}]}]}";
+
 /** The text_start / text_delta* / text_end trio pi streams for one assistant block. */
 function sendText(deltas) {
   const content = deltas.join('');
@@ -82,6 +85,24 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     send({ type: 'agent_start' });
     send({ type: 'turn_start' });
     sendText(['parity done: the task is complete\n\nCEZ:DONE']);
+    sendTurnEnd();
+  } else if (command.type === 'prompt' && command.message.includes('mock:ask-bad')) {
+    // A marker whose JSON body is invalid. `parseAskMarker` must render no card
+    // and the turn must still end (harness parity R4) — pi has no native ask
+    // wire, so the `CEZ:ASK` marker is its only ask path, same as claude's.
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    sendText(['Pick one.\n\nCEZ:ASK {not valid json']);
+    sendTurnEnd();
+  } else if (command.type === 'prompt' && command.message.includes('mock:ask')) {
+    // A well-formed `CEZ:ASK` marker, split so the marker and its JSON body land
+    // in separate deltas — the #2 boundary that used to break assembly, and the
+    // reason an ask row is worth driving through the real coalescer.
+    send({ type: 'response', command: 'prompt', success: true });
+    send({ type: 'agent_start' });
+    send({ type: 'turn_start' });
+    sendText(['Pick one.\n\n', 'CEZ:ASK', ' ', ASK_MARKER_BODY]);
     sendTurnEnd();
   } else if (command.type === 'prompt' && command.message.includes('mock:hold')) {
     // The `response` below is the ack. Holding the content AND the terminal

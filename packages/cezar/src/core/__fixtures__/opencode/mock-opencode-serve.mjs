@@ -23,6 +23,29 @@ let sse = null;
 const send = (event) => {
   if (sse) sse.write(`data: ${JSON.stringify(event)}\n\n`);
 };
+
+/** Questions the runner can look up an id for. `replyQuestion`/`rejectQuestion`
+ *  resolve the id through `GET /question` before answering (see
+ *  `opencode-server-runner.ts`), so a native ask needs an entry here. */
+const pendingQuestions = [];
+
+/** The question tool arrives as a `tool` part whose state.input holds it —
+ *  the shape `opencode-server-runner.test.ts`'s sendQuestion helper drives. */
+const sendQuestionPart = (input) =>
+  send({
+    type: 'message.part.updated',
+    properties: {
+      part: {
+        id: 'prt_mock_question',
+        messageID: MESSAGE_ID,
+        sessionID: SESSION_ID,
+        type: 'tool',
+        callID: 'call_mock_question',
+        tool: 'question',
+        state: { status: 'running', input },
+      },
+    },
+  });
 const info = (extra) => ({
   id: MESSAGE_ID,
   sessionID: SESSION_ID,
@@ -39,6 +62,11 @@ const info = (extra) => ({
 
 const server = createServer((req, res) => {
   const url = req.url ?? '';
+  if (req.method === 'GET' && url === '/question') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(pendingQuestions));
+    return;
+  }
   if (req.method === 'GET' && url.startsWith('/event')) {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     sse = res;
@@ -48,6 +76,12 @@ const server = createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => (body += chunk));
   req.on('end', () => {
+    if (req.method === 'POST' && /^\/question\/[^/]+\/(reply|reject)$/.test(url)) {
+      pendingQuestions.length = 0;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+      return;
+    }
     if (req.method === 'POST' && url === '/session') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ id: SESSION_ID, title: 'cezar task' }));
@@ -132,6 +166,31 @@ const server = createServer((req, res) => {
           cost: 0.0001, tokens: { input: 20, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
         }) } });
         setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 30);
+        return;
+      }
+      if (body.includes('mock:ask-bad')) {
+        // Malformed: `questions` is not an array, so the runner must REJECT the
+        // native question and finish the turn rather than wait for an answer to
+        // a card that can never render (#6's rejection path, harness parity R4).
+        send({ type: 'message.updated', properties: { info: info({}) } });
+        pendingQuestions.push({ id: 'q_mock_bad', sessionID: SESSION_ID });
+        sendQuestionPart({ questions: 'not-an-array' });
+        setTimeout(() => send({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 60);
+        return;
+      }
+      if (body.includes('mock:ask')) {
+        // The native question tool (#6). No `session.idle` follows: a real ask
+        // holds the turn open until the answer is routed back.
+        send({ type: 'message.updated', properties: { info: info({}) } });
+        pendingQuestions.push({ id: 'q_mock_1', sessionID: SESSION_ID });
+        sendQuestionPart({ questions: [{
+          header: 'Library',
+          question: 'Which test library?',
+          options: [
+            { label: 'Vitest', description: 'Use the existing test runner' },
+            { label: 'Node test', description: 'Use node:test' },
+          ],
+        }] });
         return;
       }
       if (body.includes('mock:done')) {

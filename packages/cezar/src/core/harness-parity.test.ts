@@ -243,6 +243,35 @@ const RUN_CRITERIA: readonly RunCriterion[] = [
     },
   },
   {
+    // Group 3 / #6, #473 — an ask has to reach the cockpit as exactly one card
+    // and park the run for the user. The two wires differ underneath: codex and
+    // opencode have a native question tool their runners map, claude and pi go
+    // through the `CEZ:ASK` marker in `workflows/run.ts`. Above the seam that
+    // difference must be invisible.
+    id: 'R3',
+    name: 'R3 parks as waiting and emits exactly one ask card',
+    scenario: 'ask',
+    settled: (record) => record?.status === 'waiting' || TERMINAL.includes(record?.status ?? ''),
+    assert: (obs) => {
+      expect(obs.record?.status).toBe('waiting');
+      expect(askEvents(obs)).toHaveLength(1);
+    },
+  },
+  {
+    // Group 3 — the other half, and the one that hangs a run when it is wrong:
+    // a malformed ask must render no card AND still end its turn. A backend
+    // that waits forever for an answer to a question nobody can see is the
+    // failure this pins; `settled` returning is itself part of the assertion.
+    id: 'R4',
+    name: 'R4 renders no card for a malformed ask and still ends the turn',
+    scenario: 'ask-bad',
+    settled: (record) => record?.status === 'waiting' || TERMINAL.includes(record?.status ?? ''),
+    assert: (obs) => {
+      expect(askEvents(obs)).toEqual([]);
+      expect([...TERMINAL, 'waiting']).toContain(obs.record?.status);
+    },
+  },
+  {
     // Group 6 / #48 — a declared park is a non-attention state. The same
     // scenario S8 asserts survives the seam: the cause below, the effect here.
     id: 'R5',
