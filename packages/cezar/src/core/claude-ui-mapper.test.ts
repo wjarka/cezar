@@ -174,6 +174,12 @@ describe('mapClaudeMessage edge cases', () => {
       [{ type: 'result', subtype: 'error_during_execution', is_error: true }, 'error'],
       [{ type: 'result', subtype: 'something_new', is_error: true }, 'error'],
       [{ type: 'result' }, 'end_turn'],
+      // Claude Code reports a revoked credential in an `is_error` result whose
+      // subtype is still `success` (see the envelope `scripts/mock-claude.mjs`
+      // mirrors for `mock:auth-error`). Reading the subtype alone told the
+      // cockpit an auth failure was a clean end of turn — group 1's failure mode
+      // (#53, #54) on claude's wire, found by harness parity row S7.
+      [{ type: 'result', subtype: 'success', is_error: true }, 'error'],
     ];
     for (const [msg, stopReason] of cases) {
       const [event] = mapClaudeMessage(msg, state).events;

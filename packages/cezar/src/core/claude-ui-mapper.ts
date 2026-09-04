@@ -561,11 +561,17 @@ function mapResult(msg: Record<string, unknown>, state: ClaudeUiMapperState): Cl
 }
 
 /** §7.1: success→end_turn, error_max_turns→max_tokens,
- *  error_during_execution→error; unknown subtypes fall back on `is_error`. */
+ *  error_during_execution→error; unknown subtypes fall back on `is_error`.
+ *
+ *  `success` still has to consult `is_error`: Claude Code reports a revoked
+ *  credential (and a usage-limit stop) in an `is_error: true` result whose
+ *  subtype is nevertheless `success`, so trusting the subtype alone told the
+ *  cockpit an auth failure was a clean end of turn — group 1's failure mode
+ *  (#53, #54) on claude's wire, found by the harness parity matrix's S7 row. */
 function resultStopReason(msg: Record<string, unknown>): StopReason {
   switch (msg.subtype) {
     case 'success':
-      return 'end_turn';
+      return msg.is_error === true ? 'error' : 'end_turn';
     case 'error_max_turns':
       return 'max_tokens';
     case 'error_during_execution':
