@@ -38,7 +38,7 @@ export function IssueFilters({ data, assignees, projectId, onAssigneesChange, on
           </fieldset>
         </PopoverContent>
       </Popover>
-      <button type="button" className={control} disabled={!data.viewerLogin} aria-pressed={isMe}
+      <button type="button" className={`${control} aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background`} disabled={!data.viewerLogin} aria-pressed={isMe}
         onClick={() => onAssigneesChange(isMe ? [] : [data.viewerLogin!])}>
         Assigned to me
       </button>
