@@ -17,9 +17,13 @@ import type { RunStore } from './store.ts';
  * no-remote/non-git cases; the `catch` is the belt-and-braces for the rest, because an unhandled
  * rejection here would take down a boot over a cosmetic chip.
  */
-export function armRepoHandle(store: RunStore, repoRoot: string): void {
+export function armRepoHandle(store: RunStore, repoRoot: string, signal?: AbortSignal): void {
   void resolveRepoHandle(repoRoot)
-    .then((handle) => store.setRepoHandle(handle))
+    .then((handle) => {
+      // A disposed context no longer owns this store. The lookup may finish, but must not
+      // repair or persist its stale snapshot over a replacement context's records.
+      if (!signal?.aborted) store.setRepoHandle(handle);
+    })
     .catch(() => {
       // Unknown handle is a first-class state — leave the store unscoped (pre-#945 behavior).
     });

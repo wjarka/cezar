@@ -94,6 +94,7 @@ export class ProjectContextError extends Error {
 export class ProjectContexts {
   private readonly contexts = new Map<string, ProjectContext>();
   private readonly building = new Map<string, Promise<ProjectContext>>();
+  private readonly repoHandleControllers = new WeakMap<RunStore, AbortController>();
   /** Live store-created subscribers; invoked before RunManager recovery. */
   private readonly storeListeners = new Set<(store: RunStore) => void>();
   /** Live `onContextBuilt` subscribers (workspace SSE, step 2.8). */
@@ -191,6 +192,8 @@ export class ProjectContexts {
     const ctx = this.contexts.get(projectId);
     if (!ctx) return false;
     this.contexts.delete(projectId);
+    this.repoHandleControllers.get(ctx.store)?.abort();
+    this.repoHandleControllers.delete(ctx.store);
     teardown(ctx);
     return true;
   }
@@ -238,7 +241,9 @@ export class ProjectContexts {
       // failed build: the promise still resolves after `teardown` flushed the index and detached
       // every listener, and a healed record would then `touch()` a store whose lifecycle had
       // ended — scheduling a `runs.json` write from a context nobody owns any more.
-      armRepoHandle(store, project.root);
+      const repoHandleController = new AbortController();
+      this.repoHandleControllers.set(store, repoHandleController);
+      armRepoHandle(store, project.root, repoHandleController.signal);
       return { id: project.id, root: project.root, dataDir, store, manager, automationStore, launchKey };
     } catch (err) {
       // A failed build must not leak the half-built context's subscriptions.
