@@ -1269,6 +1269,61 @@ describe("RunStore — a task never adopts another repository's ref (#945)", () 
     );
   });
 
+  describe('prompt repository boundaries', () => {
+    const foreignPr = 'https://github.com/acme/service/pull/42';
+    const foreignIssue = 'https://github.com/acme/service/issues/43';
+    const project = { owner: 'acme', name: 'service2' };
+    const collisions = [
+      'port acme/service2',
+      'port other-acme/service',
+      'port acme/service-extra',
+      'port acme/service_extra',
+      'port acme/service.extra',
+      'port https://github.com/acme/service2',
+    ];
+
+    it.each(collisions)('rejects a different repository in the prompt: %s', (task) => {
+      const { store, run } = scopedRun(task, project);
+      store.appendEvent(run.id, { type: 'result', result: `${foreignPr} ${foreignIssue}` });
+      const record = store.getRun(run.id);
+      expect(record?.referencedPullRequestUrl).toBeUndefined();
+      expect(record?.referencedIssueUrl).toBeUndefined();
+      expect(record?.issueNumber).toBeUndefined();
+      expect(record?.referencedPrCandidates).toEqual([foreignPr]);
+      expect(record?.referencedIssueCandidates).toEqual([foreignIssue]);
+      store.flush();
+    });
+
+    it.each(collisions)('repairs a stored collision after reload: %s', (task) => {
+      const seed = RunStore.open(dataDir);
+      const run = seed.createRun({ title: 't', workflow: 'w', task, steps: [] });
+      seed.appendEvent(run.id, { type: 'result', result: `${foreignPr} ${foreignIssue}` });
+      seed.flush();
+      const store = RunStore.open(dataDir);
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(foreignPr);
+      store.setRepoHandle(project);
+      const saved = JSON.parse(readFileSync(join(dataDir, 'runs.json'), 'utf8'))[0];
+      expect(saved.referencedPullRequestUrl).toBeUndefined();
+      expect(saved.referencedIssueUrl).toBeUndefined();
+      expect(saved.issueNumber).toBeUndefined();
+      expect(saved.referencedPrCandidates).toEqual([foreignPr]);
+      expect(saved.referencedIssueCandidates).toEqual([foreignIssue]);
+    });
+
+    it.each([
+      'port acme/service',
+      'port (ACME/Service), please',
+      `review ${foreignPr}`,
+      `fix ${foreignIssue}`,
+    ])('preserves an exact repository match: %s', (task) => {
+      const { store, run } = scopedRun(task, project);
+      store.appendEvent(run.id, { type: 'result', result: `${foreignPr} ${foreignIssue}` });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(foreignPr);
+      expect(store.getRun(run.id)?.referencedIssueUrl).toBe(foreignIssue);
+      store.flush();
+    });
+  });
+
   it("leaves the project's own PRs alone — the ordinary #407 path", () => {
     const { store, run } = scopedRun();
     store.appendEvent(run.id, {

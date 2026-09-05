@@ -373,7 +373,10 @@ function isRepoScopedRef(url: string, task: string, handle?: RepoHandle | null):
   const repo = refUrlRepo(url);
   if (!repo) return true;
   if (repo === `${handle.owner}/${handle.name}`.toLowerCase()) return true;
-  return task.toLowerCase().includes(repo);
+  // Match whole owner/repository segments: naming acme/service2 must not corroborate
+  // acme/service. Slashes remain valid boundaries for full URLs and their /pull or /issues path.
+  const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![a-z0-9_.-])${escapedRepo}(?![a-z0-9_.-])`, 'i').test(task);
 }
 
 /**
