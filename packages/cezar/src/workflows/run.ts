@@ -2891,6 +2891,9 @@ export class RunManager {
     }
 
     let userPrompt = applyTemplate(step.prompt ?? '{{task}}', input.task);
+    // Opening prompts bypass deliverMessage. Expand before workflow and attachment
+    // context so a leading registry skill matches, without changing the stored task.
+    userPrompt = expandRegistrySlashSkillText(userPrompt, state.skills ?? []);
     if (chainNote) userPrompt = `${chainNote}\n\n---\n\n${userPrompt}`;
     if (checkFailure) {
       userPrompt += `\n\nA verification command failed after the previous attempt. Fix the cause. Failing output:\n\n${checkFailure}`;
@@ -3726,10 +3729,9 @@ export function skillSystemPrompt(
  * byte-for-byte — a backend's OWN slash commands must keep working. The caller
  * persists the original user text before applying this delivery-only rewrite.
  *
- * Both delivery seams route through here: live-session messages via
- * `expandRegistrySlashSkill`, and a continuation's opening prompt, which becomes
- * the session's `userPrompt` and never passes through `deliverMessage` at all
- * (#811).
+ * All delivery seams route through here: live-session messages via
+ * `expandRegistrySlashSkill`, and fresh or continuation opening prompts, which
+ * become the session's `userPrompt` without passing through `deliverMessage`.
  */
 export function expandRegistrySlashSkillText(text: string, skills: readonly Skill[]): string {
   const match = /^\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)/.exec(text);
