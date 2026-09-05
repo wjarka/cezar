@@ -1426,6 +1426,26 @@ describe("RunStore — a task never adopts another repository's ref (#945)", () 
       expect(after?.referencedPullRequestUrl).toBeUndefined();
     });
 
+    it('persists a late heal after the caller has already flushed for shutdown', () => {
+      const store = RunStore.open(dataDir);
+      const run = store.createRun({ title: 't', workflow: 'w', task: 'research SQL safety', steps: [] });
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'See https://github.com/supabase/cli/pull/6056 and https://github.com/supabase/cli/issues/42.',
+      });
+      store.flush(); // headless run completes before repository discovery
+
+      store.setRepoHandle(HANDLE);
+
+      // Read the wire immediately: an unref'd debounce may never fire after the lookup finishes.
+      const saved = JSON.parse(readFileSync(join(dataDir, 'runs.json'), 'utf8'))[0];
+      expect(saved.referencedPullRequestUrl).toBeUndefined();
+      expect(saved.referencedIssueUrl).toBeUndefined();
+      expect(saved.issueNumber).toBeUndefined();
+      expect(saved.referencedPrCandidates).toEqual(['https://github.com/supabase/cli/pull/6056']);
+      expect(saved.referencedIssueCandidates).toEqual(['https://github.com/supabase/cli/issues/42']);
+    });
+
     it('emits the corrected record so an open cockpit repaints', () => {
       const seed = RunStore.open(dataDir);
       const run = seed.createRun({

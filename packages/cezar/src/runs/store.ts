@@ -695,9 +695,16 @@ export class RunStore extends EventEmitter {
     if (!handle) return; // nothing to prove foreign against
     // `touch` per healed run: the cockpit is already live when the handle lands, so a corrected
     // chip has to reach the open page over SSE, not just the next `runs.json` write.
+    let healed = false;
     for (const run of this.runs.values()) {
-      if (this.rescopeRun(run)) this.touch(run);
+      if (this.rescopeRun(run)) {
+        this.touch(run);
+        healed = true;
+      }
     }
+    // Discovery may finish after headless shutdown's final flush. Persist repairs now: the
+    // debounced save is unref'd, so it cannot keep the CLI alive once the lookup completes.
+    if (healed) this.flush();
   }
 
   /**
