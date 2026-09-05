@@ -61,18 +61,21 @@ describe('a teardown cezar initiated (codex app-server)', () => {
     ).toBe(true);
   }, 15_000);
 
-  it('surfaces a failed turn as an AgentEvent error', async () => {
+  it.each([
+    ['mock:turn-failed', 'model unavailable'],
+    ['mock:turn-failed mock:legacy-interrupt', 'Turn interrupted by user'],
+  ])('surfaces a legacy failed turn as an AgentEvent error: %s', async (userPrompt, message) => {
     const runner = new CodexAppServerRunner({ bin: mockBin, timeoutMs: 0 });
     const events: AgentEvent[] = [];
     const session = runner.startSession(
-      { userPrompt: 'mock:turn-failed', cwd: process.cwd() },
+      { userPrompt, cwd: process.cwd() },
       (event) => events.push(event),
       { autoEndAfterFirstTurn: true },
     );
 
     await session.result;
 
-    expect(events).toContainEqual({ type: 'error', message: 'model unavailable' });
+    expect(events).toContainEqual({ type: 'error', message });
     expect(events).toContainEqual({ type: 'turn-end' });
   }, 15_000);
 });

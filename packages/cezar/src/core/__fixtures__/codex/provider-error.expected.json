@@ -1,0 +1,11 @@
+[
+  {
+    "type": "turn.started",
+    "turnId": "turn_mock_1"
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_mock_1",
+    "stopReason": "error"
+  }
+]
