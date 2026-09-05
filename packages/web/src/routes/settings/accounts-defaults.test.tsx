@@ -128,6 +128,7 @@ function serve({
       // (it renders "Checking…") and keeps this file about the defaults block.
       if (url === '/api/v1/health' && method === 'GET') return json({ checks: [], bootProject: 'boot' })
       if (url.startsWith('/api/v1/open-targets')) return json({ targets: [] })
+      if (url === '/api/v1/models?runner=claude') return json({ runner: 'claude', models: [], source: 'unavailable', stale: false })
       if (url === '/api/v1/models?runner=codex') return json({ models: [] })
       return new Promise<never>(() => {})
     }),

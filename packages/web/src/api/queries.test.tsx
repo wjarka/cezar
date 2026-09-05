@@ -148,11 +148,14 @@ describe('useRunnerModels', () => {
     expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/v1/models?runner=pi')
   })
 
-  it('never asks the server about claude, which has no host catalog', async () => {
-    const { result } = renderHook(() => useRunnerModels('claude'), { wrapper: wrapper() })
-    await waitFor(() => expect(result.current.fetchStatus).toBe('idle'))
-    expect(result.current.data).toBeUndefined()
+  it('loads Claude models and disables discovery when its surface is hidden', async () => {
+    fetchMock.mockResolvedValue(json({ runner: 'claude', models: [{ id: 'opus[1m]', label: 'Host Opus', description: '' }], source: 'live', stale: false }))
+    const { result, rerender } = renderHook(({ enabled }) => useRunnerModels('claude', enabled), { wrapper: wrapper(), initialProps: { enabled: false } })
     expect(fetchMock).not.toHaveBeenCalled()
+    rerender({ enabled: true })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.models[0]?.id).toBe('opus[1m]')
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('/api/v1/models?runner=claude')
   })
 })
 

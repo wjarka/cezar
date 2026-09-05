@@ -33,6 +33,7 @@ describe('workspace model catalog API', () => {
       version: 'test',
       modelCatalog: new RunnerModelCatalog({
         adapters: {
+          claude: { discover },
           codex: { discover },
           opencode: { discover: opencodeDiscover },
           ...(piDiscover ? { pi: { discover: piDiscover } } : {}),
@@ -40,17 +41,17 @@ describe('workspace model catalog API', () => {
       }),
     });
 
-  it('returns the discovered catalog and reuses its cache', async () => {
+  it.each(['claude', 'codex'])('returns the %s catalog and reuses its cache', async (runner) => {
     let calls = 0;
     const server = app(async () => {
       calls += 1;
       return [{ id: 'gpt-future', label: 'GPT Future', description: 'Newly available' }];
     });
     for (let i = 0; i < 2; i += 1) {
-      const response = await apiRequest(server, '/api/v1/models?runner=codex');
+      const response = await apiRequest(server, `/api/v1/models?runner=${runner}`);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        runner: 'codex',
+        runner,
         models: [{ id: 'gpt-future' }],
         source: i === 0 ? 'live' : 'cache',
         stale: false,
@@ -126,10 +127,10 @@ describe('workspace model catalog API', () => {
     });
   });
 
-  it.each(['/api/v1/models', '/api/v1/models?runner=claude'])('rejects invalid query %s', async (path) => {
+  it.each(['/api/v1/models', '/api/v1/models?runner=unknown'])('rejects invalid query %s', async (path) => {
     const response = await apiRequest(app(async () => []), path);
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: 'runner must be codex, opencode, or pi' });
+    expect(await response.json()).toEqual({ error: 'runner must be claude, codex, opencode, or pi' });
   });
 
   it('is workspace-level rather than project-scoped', async () => {
@@ -259,6 +260,48 @@ describe('workspace model catalog API', () => {
     expect(calls).toBe(1);
     expect(await (await apiRequest(server, '/api/v1/models?runner=pi')).json()).toMatchObject({
       source: 'live',
+      models: [{ id: 'xai/grok-4.6' }],
+    });
+    expect(calls).toBe(2);
+  });
+
+  it.each(['claude', 'pi'] as const)('Check again invalidates %s without losing its last good catalog', async (runner) => {
+    let calls = 0;
+    const catalog = new RunnerModelCatalog({
+      adapters: {
+        [runner]: {
+          discover: async () => {
+            calls += 1;
+            if (calls > 1) throw new Error('unavailable');
+            return [{ id: 'xai/grok-4.6', label: 'grok-4.6', description: '' }];
+          },
+        },
+      },
+    });
+    const server = createApp({
+      repoRoot: root,
+      store,
+      manager: {} as RunManager,
+      version: 'test',
+      modelCatalog: catalog,
+      providerAuth: new ProviderAuthService({
+        runCommand: async () => ({
+          stdout: 'provider  model  context  max-out  thinking  images\nanthropic  claude  200K  64K  yes  yes',
+          stderr: '',
+          exitCode: 0,
+        }),
+      }),
+    });
+
+    expect(await (await apiRequest(server, `/api/v1/models?runner=${runner}`)).json()).toMatchObject({
+      source: 'live',
+    });
+    const refresh = await apiRequest(server, '/api/v1/providers/status?refresh=1');
+    expect(refresh.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(await (await apiRequest(server, `/api/v1/models?runner=${runner}`)).json()).toMatchObject({
+      source: 'cache',
+      stale: true,
       models: [{ id: 'xai/grok-4.6' }],
     });
     expect(calls).toBe(2);

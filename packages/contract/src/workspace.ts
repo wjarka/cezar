@@ -467,11 +467,10 @@ export type ProviderConnectResponse = z.infer<typeof providerConnectResponseSche
 /**
  * The runners whose model list is discovered from the host rather than hard-coded: Codex
  * through its app-server protocol, OpenCode through its own `models` listing (#794), Pi
- * through `pi --list-models`. Claude has no equivalent local source, so its picker keeps
- * static presets and `GET /api/v1/models` rejects it. One definition, used by the route's
+ * through `pi --list-models`, and Claude through stream-json `list_models`. One definition, used by the route's
  * query validator and by the cockpit's picker.
  */
-export const modelDiscoveryRunnerSchema = z.enum(['codex', 'opencode', 'pi']);
+export const modelDiscoveryRunnerSchema = z.enum(['claude', 'codex', 'opencode', 'pi']);
 export type ModelDiscoveryRunner = z.infer<typeof modelDiscoveryRunnerSchema>;
 export const MODEL_DISCOVERY_RUNNERS: readonly ModelDiscoveryRunner[] =
   modelDiscoveryRunnerSchema.options;

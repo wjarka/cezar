@@ -436,9 +436,9 @@ function DefaultsForNewProjects({ profiles }: { profiles: AgentProfilesResponse 
                   {model.id === '' ? 'auto (default)' : model.label}
                 </option>
               ))}
-              {modelCatalogStatus(entry.id, catalogs[entry.id].data, catalogs[entry.id].isError) ? (
+              {modelCatalogStatus(entry.id, catalogs[entry.id].data, catalogs[entry.id].isError, catalogs[entry.id].isFetching) ? (
                 <option disabled>
-                  {modelCatalogStatus(entry.id, catalogs[entry.id].data, catalogs[entry.id].isError)}
+                  {modelCatalogStatus(entry.id, catalogs[entry.id].data, catalogs[entry.id].isError, catalogs[entry.id].isFetching)}
                 </option>
               ) : null}
             </select>

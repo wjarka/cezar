@@ -91,6 +91,7 @@ function stubResolverFetch({
       if (path === '/api/v1/config') {
         return jsonResponse({ defaultRunner: projectDefault, defaultModels: {}, modelsLocked: false })
       }
+      if (path === '/api/v1/models?runner=claude') return jsonResponse({ runner: 'claude', models: [], source: 'unavailable', stale: false })
       if (path === '/api/v1/models?runner=codex') {
         return jsonResponse({ runner: 'codex', models: [], source: 'live', stale: false })
       }

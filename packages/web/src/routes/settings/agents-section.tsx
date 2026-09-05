@@ -156,7 +156,7 @@ function AgentsForm({
                   ? undefined
                   : 'Connect this provider before selecting it.'
             const catalog = catalogs[runner.id]
-            const catalogStatus = modelCatalogStatus(runner.id, catalog.data, catalog.isError)
+            const catalogStatus = modelCatalogStatus(runner.id, catalog.data, catalog.isError, catalog.isFetching)
             const modelOptions = modelsForRunner(runner.id, catalog.data, [
               config.defaultModels[runner.id],
             ])

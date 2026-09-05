@@ -626,13 +626,16 @@ steps:
 Parallel variants (×2/×3) of one task share that task's backend — mixing
 happens per task and per step, not inside a variant group.
 
-**Models come from your own machine.** For Codex, OpenCode, and Pi, the model picker
+**Models come from your own machine.** For Claude, Codex, OpenCode, and Pi, the model picker
 is not a list cezar ships — it asks the installed CLI what it can actually run
-(`codex app-server`'s `model/list`, `opencode models`, and `pi --list-models`), caches the answer in
+(Claude stream-json `list_models`, `codex app-server`'s `model/list`,
+`opencode models`, and `pi --list-models`), caches the answer in
 memory for five minutes, and shows it. A model your provider rolled out
 yesterday is selectable without a cezar release, and one it retired stops being
-offered. Claude Code has no equivalent local catalog, so it keeps a short list
-of tier aliases and pinned versions. `auto` (let the agent decide) is always
+offered. Claude discovery starts no model turn and uses safe mode with no session
+persistence. It has a 15-second deadline and a 200-model cap, with child cleanup
+on every outcome. Unsupported or unavailable Claude CLIs fall back to the
+`opus`, `sonnet`, and `haiku` aliases. `auto` (let the agent decide) is always
 available, including when the CLI is missing, logged out, or slow — discovery
 never blocks the cockpit, and a model you pinned yourself stays selectable even
 if it is absent from the discovered list.

@@ -55,6 +55,7 @@ function serve(uiState: Record<string, unknown> = {}) {
             { provider: 'opencode', status: 'connected', enabled: true },
           ],
         })
+      if (url === '/api/v1/models?runner=claude') return json({ runner: 'claude', models: [], source: 'unavailable', stale: false })
       if (url === '/api/v1/models?runner=codex') return json({ runner: 'codex', models: [], source: 'unavailable', stale: false })
       return new Promise<never>(() => {})
     }),

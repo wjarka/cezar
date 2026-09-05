@@ -46,7 +46,8 @@ function renderView(
     vi.fn((input: RequestInfo | URL) => {
       const path = String(input)
       const body =
-        path === '/api/v1/providers/status' ? providerStatus
+        path === '/api/v1/models?runner=claude' ? { runner: 'claude', models: [], source: 'unavailable', stale: false }
+        : path === '/api/v1/providers/status' ? providerStatus
         : path === '/api/v1/health' ? health
         : []
       return Promise.resolve(

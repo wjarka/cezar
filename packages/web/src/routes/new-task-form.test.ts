@@ -70,9 +70,9 @@ describe('model option resolution', () => {
     }
   })
 
-  it('claude: tier aliases + pinned versions, newest (Fable 5) first', () => {
+  it('claude: usable aliases when discovery is unavailable', () => {
     expect(modelsForRunner('claude').map((m) => m.id)).toEqual([
-      '', 'opus', 'sonnet', 'haiku', 'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5',
+      '', 'opus', 'sonnet', 'haiku',
     ])
   })
 
@@ -85,7 +85,7 @@ describe('model option resolution', () => {
   it('reports stale and unavailable Codex catalogs without exposing reasons', () => {
     expect(modelCatalogStatus('codex', { runner: 'codex', models: [], source: 'cache', stale: true, reason: 'raw' })).toBe('Using cached Codex model list')
     expect(modelCatalogStatus('codex', { runner: 'codex', models: [], source: 'unavailable', stale: false, reason: 'raw' })).toBe('Latest Codex models unavailable')
-    expect(modelCatalogStatus('claude', undefined, true)).toBeUndefined()
+    expect(modelCatalogStatus('claude', undefined, true)).toBe('Latest Claude models unavailable')
   })
 
   it('opencode: auto alone until the host catalog answers (#794)', () => {
@@ -489,4 +489,22 @@ describe('buildAutomationTask', () => {
       autonomous: true,
     })
   })
+})
+
+ describe('Claude host discovery (#89)', () => {
+  it('replaces suggestions with host rows while retaining explicit pins', () => {
+    const catalog = { runner: 'claude' as const, models: [{ id: 'opus[1m]', label: 'Host Opus', description: 'Host choice' }], source: 'live' as const, stale: false }
+    expect(modelsForRunner('claude', catalog, ['claude-opus-4-8', 'private-model']).map(m => m.id)).toEqual(['', 'opus[1m]', 'claude-opus-4-8', 'private-model'])
+    expect(resolveModel('private-model', 'claude', undefined, catalog)).toBe('private-model')
+    expect(modelCatalogStatus('claude', { ...catalog, source: 'cache', stale: true })).toBe('Using cached Claude model list')
+  })
+  it('retains the cross-runner guard for retired dated suggestions', () => {
+    expect(modelConflictsWithRunner('claude-opus-4-8', 'codex')).toBe(true)
+  })
+ })
+
+it('reports discovery in progress without masking cached feedback', () => {
+  expect(modelCatalogStatus('claude', undefined, false, true)).toBe('Loading Claude models…')
+  expect(modelCatalogStatus('claude', { runner: 'claude', models: [], source: 'cache', stale: true }, false, true)).toBe('Using cached Claude model list')
+  expect(modelCatalogStatus('claude', undefined, false, false)).toBeUndefined()
 })

@@ -60,21 +60,14 @@ export interface ModelPreset {
   desc: string
 }
 
-/** Static model presets per runner. `id: ''` is always "auto" — no model flag, the runner
- *  decides. Claude takes tier aliases + pinned versions, the only runner with no host-local
- *  catalog to ask. Codex, OpenCode, and Pi list `auto` alone: their entries come from discovery
- *  (`runnerDiscoversModels`), because a hard-coded list is stale the moment the host's provider
- *  ships a model — which is exactly what #794 reported for OpenCode. */
+/** Fallback suggestions when host discovery is unavailable. Auto omits the model flag;
+ * Claude tier aliases are resolved by the CLI. Explicit pins are appended separately. */
 export const MODELS_BY_RUNNER: Record<Runner, readonly ModelPreset[]> = {
   claude: [
     { id: '', label: 'auto', desc: 'Pick the best model per step' },
     { id: 'opus', label: 'opus', desc: 'Deep reasoning for hard tasks' },
     { id: 'sonnet', label: 'sonnet', desc: 'Fast and cheap' },
     { id: 'haiku', label: 'haiku', desc: 'Fastest — simple, scoped tasks' },
-    { id: 'claude-fable-5', label: 'Fable 5', desc: 'Most capable — the Claude 5 family' },
-    { id: 'claude-opus-4-8', label: 'Opus 4.8', desc: 'Pinned version' },
-    { id: 'claude-sonnet-5', label: 'Sonnet 5', desc: 'Pinned version' },
-    { id: 'claude-haiku-4-5', label: 'Haiku 4.5', desc: 'Pinned version' },
   ],
   codex: [
     { id: '', label: 'auto', desc: 'Use your Codex default model' },
@@ -150,6 +143,9 @@ const PROVIDER_SPANNING_RUNNERS: readonly Runner[] = ['opencode', 'pi']
  * Unknown ids remain valid custom models; only a known cross-runner mismatch is discarded. */
 export function modelConflictsWithRunner(model: string, runner: Runner): boolean {
   if (!model || MODELS_BY_RUNNER[runner].some((preset) => preset.id === model)) return false
+  // Preserve the retired dated suggestions' mismatch guard. Provider-qualified IDs stay free-form.
+  const legacyClaudeIds = ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5']
+  if (runner !== 'claude' && legacyClaudeIds.includes(model)) return true
   return Object.entries(MODELS_BY_RUNNER).some(
     ([other, presets]) =>
       other !== runner &&
@@ -163,10 +159,12 @@ export function modelsForRunner(
   catalog?: RunnerModelCatalogResponse,
   customIds: readonly (string | null | undefined)[] = [],
 ): readonly ModelPreset[] {
-  const base = [...(MODELS_BY_RUNNER[runner] ?? MODELS_BY_RUNNER.claude)]
+  const discovered = catalog?.runner === runner ? catalog.models : []
+  const presets = MODELS_BY_RUNNER[runner] ?? MODELS_BY_RUNNER.claude
+  const base = [...(discovered.length ? presets.slice(0, 1) : presets)]
   const seen = new Set(base.map((model) => model.id))
   if (runnerDiscoversModels(runner)) {
-    for (const model of catalog?.models ?? []) {
+    for (const model of discovered) {
       if (!model.id || seen.has(model.id)) continue
       seen.add(model.id)
       base.push({ id: model.id, label: model.label || model.id, desc: model.description })
@@ -185,6 +183,7 @@ export function modelsForRunner(
 
 /** How each discovery runner is named in the picker's status line. */
 const DISCOVERY_RUNNER_LABEL: Record<ModelDiscoveryRunner, string> = {
+  claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
   pi: 'Pi',
@@ -194,11 +193,13 @@ export function modelCatalogStatus(
   runner: Runner,
   catalog: RunnerModelCatalogResponse | undefined,
   failed = false,
+  fetching = false,
 ): string | undefined {
   if (!runnerDiscoversModels(runner)) return undefined
   const name = DISCOVERY_RUNNER_LABEL[runner]
   if (catalog?.stale) return `Using cached ${name} model list`
   if (failed || catalog?.source === 'unavailable') return `Latest ${name} models unavailable`
+  if (fetching && !catalog) return `Loading ${name} models…`
   return undefined
 }
 
