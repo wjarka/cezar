@@ -24,6 +24,7 @@ import { Command, CommandItem, CommandList } from '@/components/ui/command'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { toast } from '@/components/ui/toaster'
 import { insertTemplate } from '@/lib/prompt-templates'
+import { isEditableTarget } from '@/lib/use-command-shortcut'
 import { bumpSkillUsage, filterSkills, fuzzyMatch, isProjectSkill } from '@/lib/skills'
 import { useNow } from '@/lib/use-now'
 import { isSubmitShortcut } from '@/lib/use-submit-shortcut'
@@ -393,6 +394,8 @@ export function Composer({
     if (!quickReplies || disabled) return
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
       if (!event.altKey || event.metaKey || event.ctrlKey || event.repeat) return
+      // Option composes characters on macOS; leave typing and character insertion alone.
+      if (isEditableTarget(event.target)) return
       const reply = QUICK_REPLIES[event.code]
       if (reply === undefined) return
       event.preventDefault()

@@ -434,6 +434,41 @@ describe('quick replies (legacy Alt+A / Alt+C)', () => {
     expect(onSubmit).toHaveBeenCalledWith('Continue.', [])
   })
 
+  it.each(
+    ['textarea', 'input', 'select', 'contenteditable', 'contenteditable child'].flatMap((targetKind) =>
+      [['KeyA', 'ą'], ['KeyC', 'ć']].map(([code, key]) => ({ targetKind, code, key })),
+    ),
+  )(
+    'leaves $key ($code) unsubmitted and unprevented in $targetKind', ({ targetKind, code, key }) => {
+      const { textarea, onSubmit } = renderComposer({ quickReplies: true })
+      type(textarea, 'popraw to')
+      const editable = document.createElement(targetKind.startsWith('contenteditable') ? 'div' : targetKind)
+      if (targetKind.startsWith('contenteditable')) editable.setAttribute('contenteditable', 'true')
+      const child = document.createElement('span')
+      if (targetKind === 'contenteditable child') editable.append(child)
+      // Render external controls so their events bubble to the composer's window listener.
+      if (targetKind !== 'textarea') render(<div ref={(node) => { node?.append(editable) }} />)
+      const target = targetKind === 'textarea' ? textarea : targetKind === 'contenteditable child' ? child : editable
+      const delivered = fireEvent.keyDown(target, { code, key, altKey: true })
+      expect(delivered).toBe(true) // The browser remains free to insert the character.
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(textarea.value).toBe('popraw to')
+    },
+  )
+
+  it.each([
+    { altKey: false },
+    { altKey: true, ctrlKey: true },
+    { altKey: true, metaKey: true },
+    { altKey: true, repeat: true },
+  ])('ignores disallowed modifiers/repeat on an enabled composer: %j', (modifiers) => {
+    const { onSubmit } = renderComposer({ quickReplies: true })
+    for (const code of ['KeyA', 'KeyC']) {
+      expect(fireEvent.keyDown(window, { code, ...modifiers })).toBe(true)
+      expect(onSubmit).not.toHaveBeenCalled()
+    }
+  })
+
   it('does nothing without the flag, with other modifiers, or while disabled', () => {
     const { onSubmit } = renderComposer({ quickReplies: true, disabled: true })
     fireEvent.keyDown(window, { code: 'KeyA', altKey: true })
