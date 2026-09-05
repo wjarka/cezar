@@ -105,6 +105,7 @@ function serve(
       requests.push({ method, url, body })
       if (url === '/api/v1/health') return json(health)
       if (url === '/api/v1/providers/status') return json(providerStatus, providerStatusCode)
+      if (url === '/api/v1/models?runner=claude') return json({ runner: 'claude', models: [], source: 'unavailable', stale: false })
       if (url === '/api/v1/models?runner=codex') {
         return typeof modelCatalog === 'function' ? modelCatalog() : json(modelCatalog)
       }

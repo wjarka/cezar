@@ -132,6 +132,7 @@ function stubFetch(
       // The runner/model pills (#401) read the host's backends and the per-runner defaults.
       if (method === 'GET' && path === '/api/v1/health') return jsonResponse(health(backends))
       if (method === 'GET' && path === '/api/v1/providers/status') return jsonResponse(providers)
+      if (path === '/api/v1/models?runner=claude') return jsonResponse({ runner: 'claude', models: [], source: 'unavailable', stale: false })
       if (method === 'GET' && path === '/api/v1/models?runner=codex') return jsonResponse({ runner: 'codex', models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }], source: 'live', stale: false })
       if (method === 'GET' && path === '/api/v1/config') {
         return jsonResponse({ defaultRunner: backends[0] ?? 'claude', defaultModels })

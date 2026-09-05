@@ -47,6 +47,12 @@ export interface ClaudeCliRunnerOptions {
   timeoutMs?: number;
 }
 
+/** Resolve discovery and execution through the same binary and dry-run precedence. */
+export function resolveClaudeExecutable(override?: string): string {
+  return override ?? process.env.CEZ_CLAUDE_BIN ??
+    (process.env.CEZ_DRY_RUN === '1' ? mockClaudePath() : 'claude');
+}
+
 /**
  * `AgentRunner` over the Claude Code CLI in headless stream-json mode. Auth =
  * the host's logged-in Pro/Max subscription (no API key needed). Sandboxing is
@@ -67,12 +73,7 @@ export class ClaudeCliRunner implements AgentRunner {
   private lastSession: AgentSession | null = null;
 
   constructor(opts: ClaudeCliRunnerOptions = {}) {
-    // CEZ_DRY_RUN=1 swaps in the bundled mock so the cockpit / store /
-    // GUI can be exercised without a logged-in claude or burning tokens.
-    const defaultBin =
-      process.env.CEZ_CLAUDE_BIN ??
-      (process.env.CEZ_DRY_RUN === '1' ? mockClaudePath() : 'claude');
-    this.bin = opts.bin ?? defaultBin;
+    this.bin = resolveClaudeExecutable(opts.bin);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   }
 

@@ -559,6 +559,16 @@ rl.on('line', (line) => {
   let imageCount = 0;
   try {
     const msg = JSON.parse(trimmed);
+    if (msg.type === 'control_request' && msg.request?.subtype === 'list_models') {
+      process.stdout.write(`${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success', request_id: msg.request_id,
+          response: { models: ['opus', 'sonnet', 'haiku'].map(value => ({ value, displayName: value })) },
+        },
+      })}\n`);
+      return;
+    }
     const blocks = msg?.message?.content ?? [];
     userText = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n') || '(no text)';
     imageCount = blocks.filter((b) => b.type === 'image').length;

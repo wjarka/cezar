@@ -216,6 +216,7 @@ function stubFetch(
       if (method === 'GET' && path === '/api/v1/providers/status') {
         return jsonResponse(PROVIDERS_CONNECTED)
       }
+      if (path === '/api/v1/models?runner=claude') return jsonResponse({ runner: 'claude', models: [], source: 'unavailable', stale: false })
       if (method === 'GET' && path === '/api/v1/models?runner=codex') return jsonResponse({ runner: 'codex', models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }], source: 'live', stale: false })
       if (method === 'POST' && path === '/api/v1/runs') {
         return jsonResponse({

@@ -191,7 +191,7 @@ export function useContinueAction(run: ApiRun): ContinueAction {
             if (effort !== '' && resolveEffort(effort, nextOptions) === '') setPickedEffort('')
           }}
           options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
-          status={modelCatalogStatus(runner, catalog.data, catalog.isError)}
+          status={modelCatalogStatus(runner, catalog.data, catalog.isError, catalog.isFetching)}
         />
         <PickerPill
           slot="follow-up-effort-pill"

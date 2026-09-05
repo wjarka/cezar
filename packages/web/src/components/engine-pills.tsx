@@ -237,7 +237,7 @@ export function EnginePills({
           })
         }}
         options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
-        status={modelCatalogStatus(runner, catalog.data, catalog.isError)}
+        status={modelCatalogStatus(runner, catalog.data, catalog.isError, catalog.isFetching)}
       />
       <PickerPill
         slot="effort-pill"
