@@ -64,6 +64,7 @@ const GOLDEN_FIXTURES = [
   'todo-list',
   'turn-plan-updated',
   'turn-failed',
+  'provider-error',
   'review-mode',
   // Codex 0.144.6 generated schema, plus the current upstream spelling.
   'collab-agent-tool-call',
@@ -84,6 +85,19 @@ describe('codex → v2 golden fixtures', () => {
 
 describe('mapCodexNotification edge cases', () => {
   const state = createCodexUiState();
+
+  it.each([
+    [{ turn: { status: 'failed', error: null } }, 'error'],
+    [{ turn: { error: { message: 'provider unavailable' } } }, 'error'],
+    [{ error: { message: 'provider unavailable' } }, 'error'],
+    [{ turn: { status: 'failed', error: { message: 'provider stream interrupted unexpectedly' } } }, 'error'],
+    [{ turn: { status: 'interrupted', error: null } }, 'cancelled'],
+    [{ turn: { status: 'completed', error: null } }, 'end_turn'],
+    [{ turn: { status: 'completed', error: {} } }, 'end_turn'],
+  ] as const)('classifies completion payload %j as %s', (params, stopReason) => {
+    const mapped = mapCodexNotification({ method: 'turn/completed', params }, state);
+    expect(mapped.events).toContainEqual({ type: 'turn.completed', turnId: 'turn_1', stopReason });
+  });
 
   it('malformed frames produce no events and never throw', () => {
     const frames: unknown[] = [
@@ -513,13 +527,13 @@ describe('mapCodexNotification edge cases', () => {
 
     // Without this, an interrupted review leaves a `running` task item forever — and the
     // Agents dock reads a FINISHED run as a live fan-out (`Agents · 0/1 — starting…`).
-    it('closes an open span when the turn ends, so nothing is left running', () => {
+    it.each(['completed', 'interrupted'])('closes an open span on %s without changing its legacy status', (status) => {
       const entered = mapCodexNotification(
         { method: 'item/started', params: { item: { type: 'enteredReviewMode', id: 'item_rv_1' } } },
         state,
       );
       const ended = mapCodexNotification(
-        { method: 'turn/completed', params: { turn: { id: 'turn_1', status: 'completed' } } },
+        { method: 'turn/completed', params: { turn: { id: 'turn_1', status } } },
         entered.state,
       );
       expect(ended.events[0]).toEqual({

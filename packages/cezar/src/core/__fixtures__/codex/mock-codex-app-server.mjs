@@ -9,6 +9,7 @@
 // server stays deaf to stdin EOF (the CLI hang the EOF watchdog exists for)
 // and handles SIGTERM itself, exiting 143 rather than dying from the signal.
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
 
 const emit = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const rl = createInterface({ input: process.stdin });
@@ -117,10 +118,20 @@ rl.on('line', (line) => {
       }, 250);
       return;
     }
+    if (turnText.includes('mock:provider-error') || turnText.includes('mock:empty-success')) {
+      // Derived from the 0.147 rollout and upstream envelope; see provider-error.md.
+      const completion = JSON.parse(readFileSync(new URL('./provider-error.ndjson', import.meta.url), 'utf8').trim().split('\n').at(-1));
+      if (turnText.includes('mock:empty-success')) {
+        completion.params.turn.status = 'completed';
+        completion.params.turn.error = null;
+      }
+      emit(completion);
+      return;
+    }
     if (turnText.includes('mock:turn-failed')) {
       emit({ method: 'turn/failed', params: {
         turn: { id: 'turn_mock_1', status: 'failed' },
-        error: { message: 'model unavailable' },
+        error: { message: turnText.includes('mock:legacy-interrupt') ? 'Turn interrupted by user' : 'model unavailable' },
       } });
       return;
     }

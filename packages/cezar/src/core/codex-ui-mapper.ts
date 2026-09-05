@@ -26,7 +26,6 @@ import type {
   FileDiff,
   PlanEntry,
   PlanStatus,
-  StopReason,
   TokenUsage,
   ToolLocation,
   ToolStatus,
@@ -37,6 +36,7 @@ import type {
   UiToolItem,
 } from './ui-events.ts';
 import { toolDisplay } from './tool-display.ts';
+import { codexTurnOutcome } from './codex-turn-outcome.ts';
 
 /** The two reasoning delta channels, accumulated separately — see
  *  `CodexUiMapperState.reasonings`. */
@@ -160,9 +160,8 @@ export function mapCodexNotification(frame: unknown, state: CodexUiMapperState):
     case 'turn/started':
       return mapTurnStarted(params, state);
     case 'turn/completed':
-      return mapTurnEnd(params, state, /* failed */ false);
     case 'turn/failed':
-      return mapTurnEnd(params, state, /* failed */ true);
+      return mapTurnEnd(params, state, codexTurnOutcome(frame.method, params));
     case 'turn/plan/updated':
       return mapTurnPlanUpdated(params, state);
     case 'item/started':
@@ -213,7 +212,7 @@ function mapTurnStarted(params: Record<string, unknown>, state: CodexUiMapperSta
 function mapTurnEnd(
   params: Record<string, unknown>,
   state: CodexUiMapperState,
-  failed: boolean,
+  outcome: ReturnType<typeof codexTurnOutcome>,
 ): CodexUiMapping {
   let turnSeq = state.turnSeq;
   const turnId = turnIdOf(params) ?? state.currentTurnId ?? `turn_${++turnSeq}`;
@@ -232,14 +231,14 @@ function mapTurnEnd(
         name: 'enteredReviewMode',
         toolKind: 'task',
         title: 'Review',
-        status: failed ? 'failed' : 'completed',
+        status: outcome.error !== undefined ? 'failed' : 'completed',
       },
     });
   }
   const completed: Extract<UiEvent, { type: 'turn.completed' }> = {
     type: 'turn.completed',
     turnId,
-    stopReason: turnStopReason(params, failed),
+    stopReason: outcome.stopReason,
   };
   if (turnId === state.currentTurnId && state.pendingTurnUsage !== null) {
     completed.usage = state.pendingTurnUsage;
@@ -251,16 +250,6 @@ function mapTurnEnd(
       ? { ...state, turnSeq, currentTurnId: null, pendingTurnUsage: null, reviewItemId: null }
       : { ...state, turnSeq },
   };
-}
-
-/** §7.1: turn/completed→end_turn, turn/failed→error — except an interrupted
- *  turn (turn.status `interrupted`, or an interrupt-shaped error message,
- *  the only wire signals codex gives us) → cancelled. */
-function turnStopReason(params: Record<string, unknown>, failed: boolean): StopReason {
-  const turn = isRecord(params.turn) ? params.turn : {};
-  if (turn.status === 'interrupted') return 'cancelled';
-  if (!failed) return 'end_turn';
-  return /interrupt/i.test(errorMessage(params.error) ?? '') ? 'cancelled' : 'error';
 }
 
 // ---- plan -------------------------------------------------------------------

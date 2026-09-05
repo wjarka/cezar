@@ -19,6 +19,7 @@ import {
 import { parseAskRequest, type AskQuestion } from './ask.ts';
 import { readNdjson } from './ndjson.ts';
 import { V1TextCoalescer } from './v1-text-coalescer.ts';
+import { codexTurnOutcome } from './codex-turn-outcome.ts';
 import {
   CodexAppServerRpc,
   codexSpawnError,
@@ -499,10 +500,9 @@ class CodexSession implements AgentSession {
         // An interrupted/failed item never sees item/completed — surface its
         // partial prose before the turn boundary (run.ts reads markers there).
         this.textCoalescer.flush();
-        if (method === 'turn/failed' && !this.terminatedByCezar) {
-          const error = params.error as Record<string, unknown> | undefined;
-          const message = stringField(error ?? {}, 'message') ?? 'codex turn failed';
-          this.emit({ type: 'error', message });
+        const outcome = codexTurnOutcome(method, params);
+        if (outcome.error !== undefined && !this.terminatedByCezar) {
+          this.emit({ type: 'error', message: outcome.error });
         }
         this.emit({ type: 'turn-end' });
         if (this.opts.autoEndAfterFirstTurn && this.stdinOpen && !this.autoEndTimer) {

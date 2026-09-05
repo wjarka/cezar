@@ -108,8 +108,8 @@ export const HARNESS_ADAPTERS: Readonly<Record<RunnerId, HarnessAdapter>> = {
       done: 'mock:done',
       hold: 'mock:hold',
       'split-text': 'mock:split-text',
-      // `turn/failed` with an error message IS codex's provider-rejection shape.
-      'provider-error': 'mock:turn-failed',
+      // #83: 0.147 reports provider rejection on turn/completed with turn.error.
+      'provider-error': 'mock:provider-error',
       ask: 'mock:native-codex-ask',
       'ask-bad': 'mock:ask-bad',
       // #600's repro: a child thread's own turn/completed must not end the parent.
@@ -342,7 +342,7 @@ export interface RunObservation {
  */
 export async function driveRun(
   backend: RunnerId,
-  scenario: ScenarioName,
+  scenario: ScenarioName | { prompt: string },
   settled: (record: RunRecord | undefined) => boolean,
   timeoutMs = 30_000,
 ): Promise<RunObservation> {
@@ -363,7 +363,7 @@ export async function driveRun(
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
     manager = new RunManager(store, repoRoot);
     const started = manager.startRun(SINGLE_STEP, {
-      task: promptFor(backend, scenario),
+      task: typeof scenario === 'string' ? promptFor(backend, scenario) : scenario.prompt,
       runner: backend,
       worktree: false,
     });
