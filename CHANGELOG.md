@@ -1,5 +1,9 @@
 # Unreleased
 
+## Fixed
+
+- Recover structured questions missing only closing brackets, with a persistent warning to check options and selection count; preserve fork monitoring and Claude wakeups (#88).
+
 ## ✨ Features
 - ✨ **Claude permission mode is an env var, not a wrapper.** Agent runs still default to
   `--permission-mode dontAsk`. Set `CEZ_CLAUDE_PERMISSION_MODE` to `dontAsk`, `acceptEdits`, or

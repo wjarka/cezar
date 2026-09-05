@@ -695,6 +695,22 @@ describe('the v1 vocabulary sweep (cezar-code-map §3.2) — every persisted typ
     ])
   })
 
+  // #936 — a note that reports something the user LOST (a discarded CEZ:ASK
+  // question) opts into `tone: 'danger'` so it is not the dimmest line in the
+  // thread. Anything else — including every note written before the field
+  // existed — stays dim.
+  it('note with tone: danger → a danger line; an unknown tone stays dim', () => {
+    expect(
+      allItems([
+        line(1, 'note', { message: 'structured question ignored', tone: 'danger' }),
+        line(2, 'note', { message: 'worktree ready', tone: 'loud' }),
+      ]),
+    ).toEqual([
+      { kind: 'note', id: 'v1:1', text: 'structured question ignored', tone: 'danger' },
+      { kind: 'note', id: 'v1:2', text: 'worktree ready', tone: 'dim' },
+    ])
+  })
+
   it('error → a danger line', () => {
     expect(allItems([line(1, 'error', { message: 'claude exited with code 1' })])).toEqual([
       { kind: 'note', id: 'v1:1', text: 'claude exited with code 1', tone: 'danger' },
@@ -817,6 +833,16 @@ describe('reduceThread — AskUser cards (#473)', () => {
       line(2, 'ask.requested', ASK),
     ]).find((i) => i.kind === 'message') as { text: string } | undefined
     expect(msg?.text).toBe('Pick one.')
+  })
+
+  it.each(['text', 'item.completed'])('hides a recovered %s marker only when its card exists', (type) => {
+    const raw = `Pick one.\nCEZ:ASK ${JSON.stringify({ questions: ASK.questions }).slice(0, -1)}`
+    const event = type === 'text'
+      ? line(1, type, { text: raw })
+      : line(1, type, { item: { kind: 'message', id: 'm1', role: 'assistant', text: raw } })
+    const message = (events: RunEvent[]) => allItems(events).find((i) => i.kind === 'message') as { text: string }
+    expect(message([event]).text).toBe(raw)
+    expect(message([event, line(2, 'ask.requested', ASK)]).text).toBe('Pick one.')
   })
 
   it('suppresses a complete provisional marker during the active turn', () => {
